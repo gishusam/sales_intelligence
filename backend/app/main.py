@@ -30,3 +30,10 @@ app.include_router(scraper.router)
 @app.get("/health")
 def health_check():
     return {"status": "ok", "version": "0.1.0"}
+
+@app.get("/debug/cors")
+def debug_cors():
+    return {
+        "raw": settings.ALLOWED_ORIGINS,
+        "parsed": [o.strip() for o in settings.ALLOWED_ORIGINS.split(",")]
+    }
