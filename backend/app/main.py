@@ -7,7 +7,7 @@ from app.routers import leads
 from app.routers import auth 
 from app.routers import scraper
 
-Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine, checkfirst=True)
 
 app = FastAPI(
     title="Nyumba Zetu Sales Intelligence API",
