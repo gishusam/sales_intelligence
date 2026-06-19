@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int = 5432
     SECRET_KEY: str
     DEBUG: bool = False
-    ALLOWED_ORIGINS: str = "http://localhost:5173 , http://127.0.0.1:8080,http://localhost:5173"
+    ALLOWED_ORIGINS: str = (
+        "http://localhost:5173,"
+        "http://127.0.0.1:8080,"
+        "https://preview--nyumba-lead-hub.lovable.app"
+    )
 
     @property
     def database_url(self) -> str:
