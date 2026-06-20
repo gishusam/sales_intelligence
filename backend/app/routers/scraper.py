@@ -43,7 +43,7 @@ def run_scraper_background(run_id: int, scraper_type: str,
                             areas: List[str], db_url: str):
     """
     Runs in a background thread.
-    Executes the scraper, then updates scrape_runs with results.
+    Executes the scraper, then updates scraper_runs with results.
     """
     import psycopg2
     import time
@@ -82,7 +82,7 @@ def run_scraper_background(run_id: int, scraper_type: str,
             parse_metrics(result.stdout, scraper_type, cur)
 
         cur.execute("""
-            UPDATE scrape_runs SET
+            UPDATE scraper_runs SET
                 status           = 'success',
                 records_found    = %s,
                 with_contacts    = %s,
@@ -102,7 +102,7 @@ def run_scraper_background(run_id: int, scraper_type: str,
     except Exception as e:
         logger.error(f"[run {run_id}] Failed: {e}")
         cur.execute("""
-            UPDATE scrape_runs SET
+            UPDATE scraper_runs SET
                 status      = 'failed',
                 error       = %s,
                 finished_at = NOW(),
@@ -186,7 +186,7 @@ def trigger_run(
 
     # Create the run record
     row = db.execute(text("""
-        INSERT INTO scrape_runs (scraper_type, areas, status, started_by)
+        INSERT INTO scraper_runs (scraper_type, areas, status, started_by)
         VALUES (:scraper_type, :areas, 'running', :started_by)
         RETURNING id
     """), {
@@ -227,7 +227,7 @@ def get_runs(
             updated, duplicates, rejected, error,
             started_at, finished_at, duration_seconds,
             started_by
-        FROM scrape_runs
+        FROM scraper_runs
         ORDER BY started_at DESC
         LIMIT 50
     """)).fetchall()
@@ -249,7 +249,7 @@ def get_run(
             updated, duplicates, rejected, error,
             started_at, finished_at, duration_seconds,
             started_by
-        FROM scrape_runs WHERE id = :id
+        FROM scraper_runs WHERE id = :id
     """), {"id": run_id}).fetchone()
 
     if not row:
