@@ -277,3 +277,44 @@ def _format_run(r) -> dict:
         "created_at":       r.started_at.isoformat() if r.started_at else None,
         "duration_seconds": r.duration_seconds,
     }
+
+
+# ── Agent callback — Mac posts results back to Railway ────────────
+
+class RunUpdate(BaseModel):
+    status: str
+    records_found: Optional[int] = None
+    with_contacts: Optional[int] = None
+    imported: Optional[int] = None
+    updated: Optional[int] = None
+    duplicates: Optional[int] = None
+    rejected: Optional[int] = None
+    error: Optional[str] = None
+    duration_seconds: Optional[float] = None
+
+
+@router.patch("/runs/{run_id}")
+def update_run(
+    run_id: int,
+    body: RunUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Called by the local scraper agent to post results back."""
+    db.execute(text("""
+        UPDATE scraper_runs SET
+            status           = :status,
+            records_found    = COALESCE(:records_found, records_found),
+            with_contacts    = COALESCE(:with_contacts, with_contacts),
+            imported         = COALESCE(:imported, imported),
+            updated          = COALESCE(:updated, updated),
+            duplicates       = COALESCE(:duplicates, duplicates),
+            rejected         = COALESCE(:rejected, rejected),
+            error            = COALESCE(:error, error),
+            duration_seconds = COALESCE(:duration_seconds, duration_seconds),
+            finished_at      = CASE WHEN :status != 'running'
+                               THEN NOW() ELSE finished_at END
+        WHERE id = :id
+    """), {"id": run_id, **body.dict()})
+    db.commit()
+    return {"id": run_id, "status": body.status}
