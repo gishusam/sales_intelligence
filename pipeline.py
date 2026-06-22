@@ -170,7 +170,7 @@ def run(areas=None, skip_scrape=False):
             raw_location, raw_price, phone, email,
             unit_count, score, status,
             google_rating, google_reviews, lead_quality,
-            source, source_url, promoted_at
+            lead_type, source, source_url, promoted_at
         )
         SELECT DISTINCT ON (s.source_url)
             s.property_name,
@@ -195,6 +195,10 @@ def run(areas=None, skip_scrape=False):
                     THEN 'VERIFIED BUSINESS'
                 ELSE 'NEEDS RESEARCH'
             END,
+            CASE
+                WHEN s.owner_type IN ('agency', 'pm') THEN 'agency'
+                ELSE 'landlord'
+            END,
             s.source,
             s.source_url,
             NOW()
@@ -216,7 +220,7 @@ def run(areas=None, skip_scrape=False):
             name, owner_name, owner_type,
             raw_location, phone, website,
             google_rating, google_reviews,
-            lead_quality, source, status, score, promoted_at
+            lead_quality, lead_type, source, status, score, promoted_at
         )
         SELECT DISTINCT ON (g.business_name, g.area)
             g.business_name, g.business_name, 'agency',
@@ -226,6 +230,7 @@ def run(areas=None, skip_scrape=False):
                 WHEN g.rating >= 4.0 THEN 'VERIFIED BUSINESS'
                 ELSE 'MAPS ONLY'
             END,
+            'agency',
             'google_maps', 'new',
             COALESCE(g.rating * 15, 20),
             NOW()
@@ -247,7 +252,7 @@ def run(areas=None, skip_scrape=False):
             name, owner_name, owner_type,
             raw_location, phone, email, website,
             google_rating, google_reviews,
-            lead_quality, source, status, score, promoted_at
+            lead_quality, lead_type, source, status, score, promoted_at
         )
         SELECT DISTINCT ON (a.id)
             a.building_name,
@@ -264,6 +269,7 @@ def run(areas=None, skip_scrape=False):
                 WHEN a.confidence = 'medium' THEN 'VERIFIED BUSINESS'
                 ELSE 'APARTMENT LEAD'
             END,
+            'apartment',
             'apartment_discovery',
             'new',
             a.lead_score,
