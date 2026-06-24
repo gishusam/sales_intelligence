@@ -287,6 +287,47 @@ def run(areas=None, skip_scrape=False):
     from_apts = cur.rowcount
     logger.info(f"Promoted {from_apts} apartment leads")
 
+    # 5d: Developer leads from KPDA directory
+    cur.execute("""
+        INSERT INTO leads (
+            name, owner_name, owner_type,
+            raw_location, phone, email, website,
+            google_rating, google_reviews,
+            lead_quality, lead_type, source,
+            status, score, promoted_at
+        )
+        SELECT DISTINCT ON (d.developer_name)
+            d.developer_name,
+            d.developer_name,
+            'developer',
+            d.area,
+            d.contact_phone,
+            d.contact_email,
+            d.contact_website,
+            d.rating,
+            d.review_count,
+            CASE
+                WHEN d.membership_tier = 'PLATINUM'       THEN 'VERIFIED BUSINESS'
+                WHEN d.membership_tier = 'ASSOCIATE GOLD' THEN 'VERIFIED BUSINESS'
+                ELSE 'MAPS ONLY'
+            END,
+            'developer',
+            'kpda_directory',
+            'new',
+            d.tier_score,
+            NOW()
+        FROM developer_staging d
+        WHERE d.developer_name IS NOT NULL
+          AND (d.contact_phone IS NOT NULL OR d.contact_website IS NOT NULL)
+          AND NOT EXISTS (
+              SELECT 1 FROM leads l
+              WHERE LOWER(l.name) = LOWER(d.developer_name)
+          )
+        ON CONFLICT DO NOTHING
+    """)
+    from_devs = cur.rowcount
+    logger.info(f"Promoted {from_devs} developer leads")
+
     # Mark listing_staging as promoted
     cur.execute("""
         UPDATE listing_staging SET promoted = TRUE
@@ -350,7 +391,8 @@ def run(areas=None, skip_scrape=False):
           f"({total_enriched} enriched)")
     print(f"\nProduction leads: {total_leads} total")
     print(f"  This run: {from_listings} listings + "
-          f"{from_google} agencies + {from_apts} apartments")
+          f"{from_google} agencies + {from_apts} apartments + "
+          f"{from_devs} developers")
 
     print(f"\nBy quality tier:")
     for quality, count in by_quality:

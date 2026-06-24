@@ -28,6 +28,13 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         WHERE email = :email AND is_active = TRUE
     """), {"email": body.email}).fetchone()
 
+   
+    if row:
+        print("PASSWORD LENGTH:", len(body.password))
+        print("HASH LENGTH:", len(row.password_hash))
+        print("HASH PREFIX:", row.password_hash[:10])
+
+
     if not row or not verify_password(body.password, row.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

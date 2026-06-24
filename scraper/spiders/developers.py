@@ -304,7 +304,7 @@ async def enrich_developer(page, name: str) -> dict:
         )
         if web_btn:
             href = await web_btn.get_attribute("href")
-            if href and "google.com" not in href:
+            if href and "google.com" not in href and not href.startswith("/aclk"):
                 website = href
 
         # Email
