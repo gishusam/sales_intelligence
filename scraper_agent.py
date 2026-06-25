@@ -90,6 +90,84 @@ def update_run(token: str, run_id: int, data: dict):
 
 # ── Metrics from Railway DB ───────────────────────────────────────
 
+def save_run_records(run_id: int, scraper_type: str):
+    """
+    After each run, save individual records to scraper_run_records.
+    This powers the audit/drill-down view in Lovable.
+    outcome: imported / rejected / duplicate
+    reason: why it was rejected (no_phone, no_website, duplicate)
+    """
+    conn = psycopg2.connect(RAILWAY_DB_URL)
+    cur = conn.cursor()
+
+    table_map = {
+        "apartments": ("apartment_staging",
+                       "building_name", "search_area",
+                       "contact_phone", "contact_website", "category"),
+        "agencies":   ("google_places_leads",
+                       "business_name", "area",
+                       "phone", "website", "category"),
+        "developers": ("developer_staging",
+                       "developer_name", "area",
+                       "contact_phone", "contact_website", None),
+    }
+
+    if scraper_type not in table_map:
+        conn.close()
+        return
+
+    table, name_col, area_col, phone_col, web_col, cat_col = table_map[scraper_type]
+    cat_select = cat_col if cat_col else "NULL"
+
+    try:
+        cur.execute(f"""
+            SELECT {name_col}, {area_col}, {phone_col}, {web_col}, {cat_select}
+            FROM {table}
+            WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
+        """)
+        rows = cur.fetchall()
+
+        for name, area, phone, website, category in rows:
+            has_phone   = bool(phone)
+            has_website = bool(website)
+
+            # Determine outcome
+            if has_phone or has_website:
+                # Check if it made it to leads
+                cur.execute("""
+                    SELECT 1 FROM leads
+                    WHERE (name ILIKE %s OR owner_name ILIKE %s)
+                    AND promoted_at >= NOW() - INTERVAL '30 minutes'
+                    LIMIT 1
+                """, (f"%{name}%", f"%{name}%"))
+                in_leads = cur.fetchone() is not None
+                outcome = "imported" if in_leads else "duplicate"
+                reason  = "already exists" if not in_leads else None
+            else:
+                outcome = "rejected"
+                if not has_phone and not has_website:
+                    reason = "no phone or website"
+                elif not has_phone:
+                    reason = "no phone"
+                else:
+                    reason = "no website"
+
+            cur.execute("""
+                INSERT INTO scraper_run_records
+                    (run_id, name, area, phone, website, category, outcome, reason)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (run_id, name, area, phone, website, category, outcome, reason))
+
+        conn.commit()
+        logger.info(f"Saved {len(rows)} individual records for run {run_id}")
+
+    except Exception as e:
+        logger.error(f"save_run_records failed: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+
 def count_metrics(scraper_type: str) -> dict:
     """Count what was scraped and promoted in the last 30 minutes."""
     conn = psycopg2.connect(RAILWAY_DB_URL)
@@ -225,7 +303,10 @@ def execute_run(run: dict, token: str):
         else:
             logger.info(f"[run {run_id}] Promotion complete")
 
-        # Step 3: Count metrics from Railway DB
+        # Step 3: Save individual records for audit view
+        save_run_records(run_id, scraper_type)
+
+        # Step 4: Count metrics from Railway DB
         duration = time.time() - start
         metrics  = count_metrics(scraper_type)
 

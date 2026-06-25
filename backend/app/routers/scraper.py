@@ -318,3 +318,70 @@ def update_run(
     """), {"id": run_id, **body.dict()})
     db.commit()
     return {"id": run_id, "status": body.status}
+
+
+@router.get("/runs/{run_id}/records")
+def get_run_records(
+    run_id: int,
+    outcome: Optional[str] = None,  # imported / rejected / duplicate
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Returns individual records from a scrape run.
+    Powers the audit drill-down in Lovable.
+
+    outcome filter:
+      imported  — records that made it into leads table
+      rejected  — records dropped (no phone, no website)
+      duplicate — records found but already in leads
+    """
+    filters = ["run_id = :run_id"]
+    params  = {"run_id": run_id}
+
+    if outcome:
+        filters.append("outcome = :outcome")
+        params["outcome"] = outcome
+
+    where = " AND ".join(filters)
+
+    rows = db.execute(text(f"""
+        SELECT id, name, area, phone, website,
+               category, outcome, reason, created_at
+        FROM scraper_run_records
+        WHERE {where}
+        ORDER BY outcome, name
+    """), params).fetchall()
+
+    # Summary counts
+    all_rows = db.execute(text("""
+        SELECT outcome, COUNT(*) as count
+        FROM scraper_run_records
+        WHERE run_id = :run_id
+        GROUP BY outcome
+    """), {"run_id": run_id}).fetchall()
+
+    summary = {r.outcome: r.count for r in all_rows}
+
+    return {
+        "run_id":  run_id,
+        "summary": {
+            "imported":  summary.get("imported",  0),
+            "rejected":  summary.get("rejected",  0),
+            "duplicate": summary.get("duplicate", 0),
+            "total":     sum(summary.values()),
+        },
+        "records": [
+            {
+                "id":       r.id,
+                "name":     r.name,
+                "area":     r.area,
+                "phone":    r.phone,
+                "website":  r.website,
+                "category": r.category,
+                "outcome":  r.outcome,
+                "reason":   r.reason,
+            }
+            for r in rows
+        ]
+    }
