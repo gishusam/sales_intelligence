@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import Base, engine
 from app.models import zone, lead, client,scraper_run # noqa: F401
-from app.routers import leads  
+from app.routers import leads
+from app.routers import notes  
 from app.routers import auth 
 from app.routers import scraper
 
@@ -26,7 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(leads.router)  
+app.include_router(leads.router)
+app.include_router(notes.router)  
 app.include_router(auth.router)
 app.include_router(scraper.router)
 
