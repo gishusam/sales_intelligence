@@ -95,9 +95,15 @@ def get_weekly_report(
             COUNT(*) AS count
         FROM leads
         WHERE area IS NOT NULL
+          AND lead_type != 'developer'
         GROUP BY area, lead_type
         ORDER BY area, lead_type
     """)).fetchall()
+
+    # Developers tracked separately — they're not tied to one area
+    developer_count = db.execute(text("""
+        SELECT COUNT(*) FROM leads WHERE lead_type = 'developer'
+    """)).scalar()
 
     # Reshape into: { area: { apartment: N, agency: N, landlord: N } }
     coverage = {}
@@ -164,4 +170,5 @@ def get_weekly_report(
 
         "coverage": coverage_list,
         "untapped_areas": untapped,
+        "developers_tracked": developer_count,
     }
