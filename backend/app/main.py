@@ -7,6 +7,7 @@ from app.routers import leads
 from app.routers import notes  
 from app.routers import auth 
 from app.routers import scraper
+from app.routers import reports
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 
@@ -31,6 +32,7 @@ app.include_router(leads.router)
 app.include_router(notes.router)  
 app.include_router(auth.router)
 app.include_router(scraper.router)
+app.include_router(reports.router)
 
 @app.get("/health")
 def health_check():
