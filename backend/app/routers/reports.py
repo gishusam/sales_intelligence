@@ -13,6 +13,7 @@ import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
+from app.auth import get_current_user, CurrentUser
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -81,6 +82,7 @@ async def get_weekly_report(
     days:      int  = Query(7, ge=1, le=31),
     narrative: bool = Query(False),
     db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Weekly pipeline report — sales activity + scraping coverage.
@@ -232,6 +234,7 @@ async def get_weekly_report(
 async def get_narrative_only(
     days: int = Query(7, ge=1, le=31),
     db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Returns just the AI narrative. Frontend calls this separately
