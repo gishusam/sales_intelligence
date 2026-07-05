@@ -219,6 +219,7 @@ async def create_note(
     db.execute(text("""
         UPDATE leads SET
             ai_score         = :ai_score,
+            ai_score_label   = :ai_score_label,
             ai_score_reason  = :ai_score_reason,
             ai_scored_at     = NOW(),
             follow_up_date   = :follow_up_date,
@@ -229,6 +230,7 @@ async def create_note(
     """), {
         "id":              lead_id,
         "ai_score":        ai_result.get("score"),
+        "ai_score_label":  SCORE_DISPLAY.get(ai_result.get("score", ""), ""),
         "ai_score_reason": ai_result.get("reason"),
         "follow_up_date":  follow_up_date,
     })

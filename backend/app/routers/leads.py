@@ -173,6 +173,7 @@ def get_leads(
     status:      Optional[str] = Query(None),
     area:        Optional[str] = Query(None),
     assigned_to: Optional[str] = Query(None),
+    ai_score: Optional[str] = Query(None),
     page:        int = Query(1, ge=1),
     limit:       int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -191,6 +192,10 @@ def get_leads(
     if assigned_to:
         filters.append("assigned_to = :assigned_to")
         params["assigned_to"] = assigned_to
+
+    if ai_score:
+        filters.append("ai_score = :ai_score")
+        params["ai_score"] = ai_score      
 
     where  = " AND ".join(filters)
     offset = (page - 1) * limit
