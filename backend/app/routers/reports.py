@@ -198,7 +198,7 @@ def _build_report_data(db: Session, days: int) -> dict:
     # ── This week's scrape runs ───────────────────────────────────
     scrape_rows = db.execute(text("""
         SELECT
-            area,
+            unnested_area AS area,
             scraper_type,
             SUM(records_found) AS records_found,
             SUM(imported)      AS imported,
@@ -207,11 +207,11 @@ def _build_report_data(db: Session, days: int) -> dict:
             COUNT(*)           AS run_count,
             MAX(finished_at)   AS last_run
         FROM scraper_runs,
-             UNNEST(areas) AS area
+             UNNEST(areas) AS unnested_area
         WHERE started_at >= :since
           AND status = 'success'
-        GROUP BY area, scraper_type
-        ORDER BY area, scraper_type
+        GROUP BY unnested_area, scraper_type
+        ORDER BY unnested_area, scraper_type
     """), {"since": since}).fetchall()
 
     scraped_areas = {r.area.lower() for r in scrape_rows}
