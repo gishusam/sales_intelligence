@@ -114,6 +114,82 @@ async def generate_narrative(report_data: dict) -> str:
 
 # ── Data fetching ──────────────────────────────────────────────────
 
+
+def _followup_by_day(db: Session) -> list:
+    """
+    Returns follow-up counts broken down by day for the next 7 days.
+    Each entry: { date, day_label, count, leads[] }
+    """
+    rows = db.execute(text("""
+        SELECT
+            follow_up_date,
+            COUNT(*)  AS count,
+            json_agg(json_build_object(
+                'id',        id,
+                'name',      name,
+                'phone',     phone,
+                'area',      area,
+                'lead_type', lead_type,
+                'ai_score',  ai_score,
+                'status',    status
+            ) ORDER BY ai_score, name) AS leads
+        FROM leads
+        WHERE follow_up_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7
+          AND status NOT IN ('won','Won','lost','Lost')
+          AND follow_up_date IS NOT NULL
+        GROUP BY follow_up_date
+        ORDER BY follow_up_date ASC
+    """)).fetchall()
+
+    from datetime import date, timedelta
+    import json
+
+    today = date.today()
+    day_labels = {
+        0: "Today",
+        1: "Tomorrow",
+        2: "Monday", 3: "Tuesday", 4: "Wednesday",
+        5: "Thursday", 6: "Friday", 7: "Saturday",
+    }
+
+    # Build a dict keyed by date for quick lookup
+    by_date = {}
+    for r in rows:
+        fd = r.follow_up_date
+        delta = (fd - today).days
+        leads = r.leads if isinstance(r.leads, list) else json.loads(r.leads)
+        by_date[fd] = {
+            "date":      fd.isoformat(),
+            "day_name":  fd.strftime("%A"),
+            "day_label": "Today" if delta == 0 else
+                         "Tomorrow" if delta == 1 else
+                         fd.strftime("%A"),
+            "days_from_today": delta,
+            "count":     r.count,
+            "leads":     leads,
+        }
+
+    # Fill in days with zero follow-ups so the frontend
+    # gets a complete 7-day picture
+    result = []
+    for i in range(8):
+        d = today + timedelta(days=i)
+        if d in by_date:
+            result.append(by_date[d])
+        else:
+            result.append({
+                "date":            d.isoformat(),
+                "day_name":        d.strftime("%A"),
+                "day_label":       "Today" if i == 0 else
+                                   "Tomorrow" if i == 1 else
+                                   d.strftime("%A"),
+                "days_from_today": i,
+                "count":           0,
+                "leads":           [],
+            })
+
+    return result
+
 def _build_report_data(db: Session, days: int) -> dict:
     """
     Single function that fetches all report data.
@@ -285,6 +361,7 @@ def _build_report_data(db: Session, days: int) -> dict:
         "ai_scores": {
             r.ai_score: r.count for r in score_rows
         },
+        "follow_up_next_7_days": _followup_by_day(db),
     }
 
 
