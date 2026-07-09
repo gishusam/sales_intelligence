@@ -2,12 +2,6 @@
 notes.py — Lead notes + automatic LLM scoring via Groq (free tier)
 When a rep saves a note, Groq/Llama3 scores the lead automatically.
 
-Add to main.py:
-    from app.routers import notes
-    app.include_router(notes.router)
-
-Set in Railway environment variables:
-    GROQ_API_KEY=your_key_from_console.groq.com
 """
 
 import os
