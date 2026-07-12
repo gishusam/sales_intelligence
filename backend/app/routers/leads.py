@@ -481,31 +481,112 @@ def normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()
 
 
+# Map from possible column names in uploaded files → our standard field names
+COLUMN_ALIASES = {
+    # name
+    "name":                        "name",
+    "apartment name/company name": "name",
+    "company name":                "name",
+    "apartment name":              "name",
+    "business name":               "name",
+    "agency name":                 "name",
+    "property name":               "name",
+
+    # owner_name
+    "owner_name":                  "owner_name",
+    "owner":                       "owner_name",
+    "point of contact name":       "owner_name",
+    "contact name":                "owner_name",
+    "contact person":              "owner_name",
+
+    # phone
+    "phone":                       "phone",
+    "phone number":                "phone",
+    "phone number -":              "phone",
+    "phone number decision maker": "phone",
+    "mobile":                      "phone",
+    "tel":                         "phone",
+    "telephone":                   "phone",
+    "contact":                     "phone",
+
+    # email
+    "email":                       "email",
+    "email address":               "email",
+    "e-mail":                      "email",
+
+    # area
+    "area":                        "area",
+    "location":                    "area",
+    "zone":                        "area",
+    "region":                      "area",
+    "address":                     "area",
+
+    # lead_type
+    "lead_type":                   "lead_type",
+    "type":                        "lead_type",
+    "role":                        "lead_type",
+    "category":                    "lead_type",
+
+    # website
+    "website":                     "website",
+    "web":                         "website",
+    "url":                         "website",
+    "website url":                 "website",
+
+    # notes
+    "notes":                       "notes",
+    "comments":                    "notes",
+    "comment":                     "notes",
+    "hubspot status":              "notes",
+    "status":                      "notes",
+}
+
+
+def normalize_header(h: str) -> str:
+    """Map any column name variant to our standard field name."""
+    cleaned = h.strip().lower().rstrip("-").strip()
+    return COLUMN_ALIASES.get(cleaned, cleaned)
+
+
 def parse_csv(content: bytes) -> list[dict]:
-    """Parse CSV file content into list of row dicts."""
+    """
+    Parse CSV or TSV file content into list of row dicts.
+    Handles: BOM, tab-separated, semicolon-separated,
+    varied column names, extra spaces.
+    """
     try:
-        # Strip BOM if present (common in Excel-exported CSVs)
         text_content = content.decode("utf-8-sig")
     except UnicodeDecodeError:
         text_content = content.decode("latin-1")
 
-    reader = csv.DictReader(io.StringIO(text_content))
+    # Auto-detect delimiter — tab, semicolon, or comma
+    first_line = text_content.split("\n")[0]
+    if "\t" in first_line:
+        delimiter = "\t"
+    elif ";" in first_line:
+        delimiter = ";"
+    else:
+        delimiter = ","
+
+    reader = csv.DictReader(io.StringIO(text_content), delimiter=delimiter)
     raw_rows = list(reader)
     raw_fieldnames = reader.fieldnames or []
 
-    # Normalize headers — strip spaces and lowercase
-    # so "Name", " name ", "NAME" all become "name"
-    normalized_map = {f: f.strip().lower() for f in raw_fieldnames}
-    normalized_fieldnames = list(normalized_map.values())
+    # Map raw headers to standard names
+    header_map = {f: normalize_header(f) for f in raw_fieldnames}
 
     normalized_rows = []
     for row in raw_rows:
-        normalized_rows.append({
-            normalized_map[k]: v.strip() if v else ""
-            for k, v in row.items()
-            if k in normalized_map
-        })
+        normalized = {}
+        for raw_col, std_col in header_map.items():
+            val = row.get(raw_col, "")
+            val = str(val).strip() if val else ""
+            # Keep the last value if there are duplicate mapped columns
+            if val:
+                normalized[std_col] = val
+        normalized_rows.append(normalized)
 
+    normalized_fieldnames = list(set(header_map.values()))
     return normalized_rows, normalized_fieldnames
 
 
