@@ -8,6 +8,7 @@
 import io
 import csv
 import re
+import openpyxl
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -459,11 +460,19 @@ def update_notes(
 # ── FEATURE 3: Bulk CSV upload ─────────────────────────────────────
 # Rep uploads a CSV with columns: name, phone, area, lead_type, website, email
 # System inserts new leads, skips duplicates, rejects rows with no contact.
-# Returns a full import report.
+# Returns a full import report. 
 
 REQUIRED_COLUMNS = {"name"}
 OPTIONAL_COLUMNS = {"phone", "area", "lead_type", "website", "email", "owner_name"}
-VALID_LEAD_TYPES = {"apartment", "agency", "landlord"}
+VALID_LEAD_TYPES = {"apartment", "agency", "landlord", "developer"}
+
+SCORE_DISPLAY = {
+    "LOW_HANGING_FRUIT": "Low Hanging Fruit",
+    "WARM_PROSPECT":     "Warm Prospect",
+    "EXECUTIVE_LEAD":    "Executive Lead",
+    "NURTURE":           "Nurture",
+    "NOT_QUALIFIED":     "Not Qualified",
+}
 
 
 def normalize_name(name: str) -> str:
@@ -472,98 +481,152 @@ def normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()
 
 
-@router.post("/leads/import")
-async def import_leads_csv(
-    file: UploadFile = File(...),
-    db:   Session    = Depends(get_db),
-):
-    """
-    Bulk import leads from a CSV file.
-
-    Expected CSV columns:
-        name (required), phone, email, website,
-        area, lead_type, owner_name
-
-    Returns an import report showing:
-        - inserted: new leads added
-        - updated:  existing leads with better contact info
-        - duplicates: same name already exists, no better data
-        - rejected: no phone AND no website
-        - errors: rows that couldn't be parsed
-    """
-    if not file.filename.endswith((".csv", ".CSV")):
-        raise HTTPException(400, "Only CSV files are supported")
-
-    content = await file.read()
-
+def parse_csv(content: bytes) -> list[dict]:
+    """Parse CSV file content into list of row dicts."""
     try:
         text_content = content.decode("utf-8")
     except UnicodeDecodeError:
         text_content = content.decode("latin-1")
-
     reader = csv.DictReader(io.StringIO(text_content))
+    return list(reader), reader.fieldnames
 
-    # Validate headers
-    if not reader.fieldnames:
-        raise HTTPException(400, "CSV file is empty or has no headers")
 
-    headers = {h.lower().strip() for h in reader.fieldnames}
-    if "name" not in headers:
-        raise HTTPException(400, "CSV must have a 'name' column")
+def parse_excel(content: bytes) -> tuple[list[dict], list[str]]:
+    """Parse Excel (.xlsx) file into list of row dicts."""
+    wb   = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+    ws   = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+    headers  = [str(h).strip().lower() if h else "" for h in rows[0]]
+    data     = []
+    for row in rows[1:]:
+        if all(cell is None for cell in row):
+            continue
+        data.append({
+            headers[i]: str(cell).strip() if cell is not None else ""
+            for i, cell in enumerate(row)
+            if i < len(headers)
+        })
+    return data, headers
 
-    # Process rows
-    inserted   = 0
-    updated    = 0
-    duplicates = 0
-    rejected   = 0
-    errors     = []
 
-    for i, row in enumerate(reader, start=2):  # start=2 because row 1 is header
+@router.post("/leads/import")
+async def import_leads(
+    file: UploadFile = File(...),
+    db:   Session    = Depends(get_db),
+):
+    """
+    Bulk import leads from CSV or Excel (.xlsx) file.
+
+    Expected columns:
+        name (required), phone, email, website,
+        area, lead_type, owner_name
+
+    Returns a detailed audit report showing exactly which records
+    were inserted, updated, duplicated, or rejected — by name.
+    """
+    filename = file.filename.lower()
+    content  = await file.read()
+
+    # ── Parse file ─────────────────────────────────────────────────
+    if filename.endswith(".csv"):
         try:
-            # Clean values
-            name     = row.get("name", "").strip()
-            phone    = row.get("phone", "").strip() or None
-            email    = row.get("email", "").strip() or None
-            website  = row.get("website", "").strip() or None
-            area     = row.get("area", "").strip() or None
-            owner    = row.get("owner_name", "").strip() or None
-            ltype    = row.get("lead_type", "landlord").strip().lower()
+            rows, fieldnames = parse_csv(content)
+        except Exception as e:
+            raise HTTPException(400, f"Could not parse CSV: {e}")
+
+    elif filename.endswith((".xlsx", ".xls")):
+        try:
+            rows, fieldnames = parse_excel(content)
+        except Exception as e:
+            raise HTTPException(400, f"Could not parse Excel file: {e}")
+    else:
+        raise HTTPException(400, "Only CSV (.csv) or Excel (.xlsx) files are supported")
+
+    if not fieldnames:
+        raise HTTPException(400, "File is empty or has no headers")
+
+    headers = {h.lower().strip() for h in fieldnames if h}
+    if "name" not in headers:
+        raise HTTPException(400, "File must have a 'name' column")
+
+    # ── Process rows ───────────────────────────────────────────────
+    inserted_records   = []   # list of {row, name, area, phone}
+    updated_records    = []   # list of {row, name, what_changed}
+    duplicate_records  = []   # list of {row, name, reason}
+    rejected_records   = []   # list of {row, name, reason}
+    error_records      = []   # list of {row, reason}
+
+    for i, row in enumerate(rows, start=2):
+        try:
+            name    = str(row.get("name", "") or "").strip()
+            phone   = str(row.get("phone", "") or "").strip() or None
+            email   = str(row.get("email", "") or "").strip() or None
+            website = str(row.get("website", "") or "").strip() or None
+            area    = str(row.get("area", "") or "").strip() or None
+            owner   = str(row.get("owner_name", "") or "").strip() or None
+            ltype   = str(row.get("lead_type", "") or "").strip().lower()
 
             if not name:
-                errors.append({"row": i, "reason": "empty name"})
+                error_records.append({"row": i, "name": "—", "reason": "Empty name field"})
                 continue
 
-            # Reject if no contact method
-            if not phone and not website:
-                rejected += 1
+            # Reject if no contact method at all
+            if not phone and not website and not email:
+                rejected_records.append({
+                    "row":    i,
+                    "name":   name,
+                    "reason": "No phone, email, or website provided"
+                })
                 continue
 
-            # Validate lead type
+            # Validate and default lead type
             if ltype not in VALID_LEAD_TYPES:
-                ltype = "landlord"
+                ltype = "agency"
 
             name_norm = normalize_name(name)
+            if not name_norm:
+                error_records.append({"row": i, "name": name, "reason": "Name normalizes to empty"})
+                continue
 
             # Check if already exists
             existing = db.execute(
-                text("SELECT id, phone, website FROM leads WHERE name_normalized = :n"),
+                text("SELECT id, phone, website, email FROM leads WHERE name_normalized = :n"),
                 {"n": name_norm}
             ).fetchone()
 
             if existing:
-                # Only update if we have better contact data
-                if (phone and not existing.phone) or (website and not existing.website):
+                # Update if we have better contact data
+                changes = []
+                if phone and not existing.phone:
+                    changes.append("added phone")
+                if website and not existing.website:
+                    changes.append("added website")
+                if email and not existing.email:
+                    changes.append("added email")
+
+                if changes:
                     db.execute(text("""
                         UPDATE leads SET
                             phone      = COALESCE(:phone,   phone),
                             website    = COALESCE(:website, website),
+                            email      = COALESCE(:email,   email),
                             updated_at = NOW()
                         WHERE name_normalized = :n
-                    """), {"phone": phone, "website": website, "n": name_norm})
+                    """), {"phone": phone, "website": website, "email": email, "n": name_norm})
                     db.commit()
-                    updated += 1
+                    updated_records.append({
+                        "row":          i,
+                        "name":         name,
+                        "what_changed": ", ".join(changes),
+                    })
                 else:
-                    duplicates += 1
+                    duplicate_records.append({
+                        "row":    i,
+                        "name":   name,
+                        "reason": "Already exists with same or better contact info"
+                    })
                 continue
 
             # Insert new lead
@@ -574,7 +637,7 @@ async def import_leads_csv(
                     status, name_normalized
                 ) VALUES (
                     :name, :owner, :phone, :email, :website,
-                    :area, :lead_type, 'manual_import', 50,
+                    :area, :lead_type, 'bulk_upload', 40,
                     'new', :name_norm
                 )
             """), {
@@ -588,20 +651,50 @@ async def import_leads_csv(
                 "name_norm": name_norm,
             })
             db.commit()
-            inserted += 1
+
+            inserted_records.append({
+                "row":      i,
+                "name":     name,
+                "area":     area or "—",
+                "phone":    phone or "—",
+                "lead_type": ltype,
+            })
 
         except Exception as e:
-            errors.append({"row": i, "reason": str(e)[:100]})
             db.rollback()
+            error_records.append({"row": i, "name": row.get("name", "—"), "reason": str(e)[:120]})
+
+    # ── Build audit report ─────────────────────────────────────────
+    total_rows = len(inserted_records) + len(updated_records) + \
+                 len(duplicate_records) + len(rejected_records) + len(error_records)
 
     return {
         "filename":   file.filename,
-        "inserted":   inserted,
-        "updated":    updated,
-        "duplicates": duplicates,
-        "rejected":   rejected,
-        "errors":     errors,
-        "total_rows": inserted + updated + duplicates + rejected + len(errors),
-        "summary":    f"{inserted} new leads added, {duplicates} duplicates skipped, "
-                      f"{rejected} rejected (no contact), {len(errors)} errors",
+        "total_rows": total_rows,
+
+        # Summary counts
+        "inserted":   len(inserted_records),
+        "updated":    len(updated_records),
+        "duplicates": len(duplicate_records),
+        "rejected":   len(rejected_records),
+        "errors":     len(error_records),
+
+        "summary": (
+            f"{len(inserted_records)} new leads added, "
+            f"{len(updated_records)} updated with better contact info, "
+            f"{len(duplicate_records)} duplicates skipped, "
+            f"{len(rejected_records)} rejected (no contact), "
+            f"{len(error_records)} errors"
+        ),
+
+        # Detailed audit — every record by name
+        "audit": {
+            "inserted":  inserted_records,
+            "updated":   updated_records,
+            "duplicates": duplicate_records,
+            "rejected":  rejected_records,
+            "errors":    error_records,
+        }
     }
+
+

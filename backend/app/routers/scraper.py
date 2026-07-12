@@ -202,16 +202,39 @@ def trigger_run(
     from app.config import settings
     db_url = settings.database_url
 
-    # Fire and forget
-    thread = threading.Thread(
-        target=run_scraper_background,
-        args=(run_id, body.scraper_type, body.areas, db_url),
-        daemon=True
-    )
-    thread.start()
+    # Trigger GitHub Actions workflow
+    import os, httpx
+    github_token = os.getenv("GITHUB_TOKEN", "")
+    github_repo  = os.getenv("GITHUB_REPO", "")  # e.g. "samwelngugi/nyumba-zetu-intelligence"
 
-    logger.info(f"Started run {run_id} for {body.scraper_type} in {body.areas}")
-    return {"run_id": run_id, "status": "running"}
+    if github_token and github_repo:
+        try:
+            resp = httpx.post(
+                f"https://api.github.com/repos/{github_repo}/dispatches",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept":        "application/vnd.github.v3+json",
+                },
+                json={
+                    "event_type": "run_scraper",
+                    "client_payload": {
+                        "run_id":       run_id,
+                        "scraper_type": body.scraper_type,
+                        "areas":        ",".join(body.areas),
+                    }
+                },
+                timeout=10
+            )
+            if resp.status_code == 204:
+                logger.info(f"GitHub Actions triggered for run {run_id}")
+            else:
+                logger.warning(f"GitHub dispatch failed: {resp.status_code} {resp.text}")
+        except Exception as e:
+            logger.error(f"GitHub dispatch error: {e}")
+    else:
+        logger.warning("GITHUB_TOKEN or GITHUB_REPO not set — scraper won't run")
+
+    return {"run_id": run_id, "status": "running", "message": f"{body.scraper_type} scraper started", "areas": body.areas}
 
 
 @router.get("/runs")

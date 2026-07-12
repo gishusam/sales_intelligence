@@ -1,0 +1,41 @@
+name: Run Scraper
+
+on:
+  repository_dispatch:
+    types: [run_scraper]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r scraper/requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run scraper agent (single run)
+        env:
+          POSTGRES_HOST:     ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PORT:     ${{ secrets.POSTGRES_PORT }}
+          POSTGRES_DB:       ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER:     ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          RAILWAY_API:       ${{ secrets.RAILWAY_API }}
+          AGENT_EMAIL:       ${{ secrets.AGENT_EMAIL }}
+          AGENT_PASSWORD:    ${{ secrets.AGENT_PASSWORD }}
+        run: |
+          python github_agent.py \
+            --run-id ${{ github.event.client_payload.run_id }} \
+            --scraper-type ${{ github.event.client_payload.scraper_type }} \
+            --areas "${{ github.event.client_payload.areas }}"
