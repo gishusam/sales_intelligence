@@ -484,11 +484,29 @@ def normalize_name(name: str) -> str:
 def parse_csv(content: bytes) -> list[dict]:
     """Parse CSV file content into list of row dicts."""
     try:
-        text_content = content.decode("utf-8")
+        # Strip BOM if present (common in Excel-exported CSVs)
+        text_content = content.decode("utf-8-sig")
     except UnicodeDecodeError:
         text_content = content.decode("latin-1")
+
     reader = csv.DictReader(io.StringIO(text_content))
-    return list(reader), reader.fieldnames
+    raw_rows = list(reader)
+    raw_fieldnames = reader.fieldnames or []
+
+    # Normalize headers — strip spaces and lowercase
+    # so "Name", " name ", "NAME" all become "name"
+    normalized_map = {f: f.strip().lower() for f in raw_fieldnames}
+    normalized_fieldnames = list(normalized_map.values())
+
+    normalized_rows = []
+    for row in raw_rows:
+        normalized_rows.append({
+            normalized_map[k]: v.strip() if v else ""
+            for k, v in row.items()
+            if k in normalized_map
+        })
+
+    return normalized_rows, normalized_fieldnames
 
 
 def parse_excel(content: bytes) -> tuple[list[dict], list[str]]:
