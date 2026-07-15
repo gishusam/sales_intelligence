@@ -36,35 +36,6 @@ app.include_router(reports.router)
 
 
 
-@app.get("/schema")
-def get_schema(db = Depends(lambda: next(get_db()))):
-    from sqlalchemy import text, inspect
-    result = {}
-    tables = db.execute(text("""
-        SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public'
-        AND table_type = 'BASE TABLE'
-        ORDER BY table_name
-    """)).fetchall()
-
-    for (table,) in tables:
-        cols = db.execute(text(f"""
-            SELECT column_name, data_type, is_nullable, column_default
-            FROM information_schema.columns
-            WHERE table_name = :t
-            ORDER BY ordinal_position
-        """), {"t": table}).fetchall()
-        result[table] = [
-            {
-                "column": c[0],
-                "type": c[1],
-                "nullable": c[2],
-                "default": c[3]
-            }
-            for c in cols
-        ]
-    return result
-
 @app.get("/health")
 def health_check():
     return {"status": "ok", "version": "0.1.0"}

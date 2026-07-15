@@ -218,28 +218,26 @@ def run(areas=None, skip_scrape=False):
     cur.execute("""
         INSERT INTO leads (
             name, owner_name, owner_type,
-            raw_location, phone, website,
-            google_rating, google_reviews,
+            area, phone, website,
             lead_quality, lead_type, source, status, score, promoted_at
         )
         SELECT DISTINCT ON (g.business_name, g.area)
             g.business_name, g.business_name, 'agency',
             g.area, g.phone, g.website,
-            g.rating, g.review_count,
             CASE
                 WHEN g.rating >= 4.0 THEN 'VERIFIED BUSINESS'
                 ELSE 'MAPS ONLY'
             END,
             'agency',
             'google_maps', 'new',
-            COALESCE(g.rating * 15, 20),
+            20,
             NOW()
         FROM google_places_leads g
         WHERE NOT EXISTS (
             SELECT 1 FROM leads l
             WHERE LOWER(l.owner_name) LIKE
                   '%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%'
-              AND LOWER(l.raw_location) = LOWER(g.area)
+              AND LOWER(l.area) = LOWER(g.area)
         )
         ON CONFLICT DO NOTHING
     """)
@@ -250,8 +248,7 @@ def run(areas=None, skip_scrape=False):
     cur.execute("""
         INSERT INTO leads (
             name, owner_name, owner_type,
-            raw_location, phone, email, website,
-            google_rating, google_reviews,
+            area, phone, email, website,
             lead_quality, lead_type, source, status, score, promoted_at
         )
         SELECT DISTINCT ON (a.id)
@@ -262,8 +259,6 @@ def run(areas=None, skip_scrape=False):
             a.contact_phone,
             a.contact_email,
             a.contact_website,
-            a.rating,
-            a.review_count,
             CASE
                 WHEN a.confidence = 'high'   THEN 'VERIFIED + ACTIVE'
                 WHEN a.confidence = 'medium' THEN 'VERIFIED BUSINESS'
@@ -280,7 +275,7 @@ def run(areas=None, skip_scrape=False):
               SELECT 1 FROM leads l
               WHERE LOWER(l.name) LIKE
                     '%' || LOWER(SPLIT_PART(a.building_name, ' ', 1)) || '%'
-                AND LOWER(l.raw_location) = LOWER(a.search_area)
+                AND LOWER(l.area) = LOWER(a.search_area)
           )
         ON CONFLICT DO NOTHING
     """)
@@ -291,8 +286,7 @@ def run(areas=None, skip_scrape=False):
     cur.execute("""
         INSERT INTO leads (
             name, owner_name, owner_type,
-            raw_location, phone, email, website,
-            google_rating, google_reviews,
+            area, phone, email, website,
             lead_quality, lead_type, source,
             status, score, promoted_at
         )
@@ -304,8 +298,6 @@ def run(areas=None, skip_scrape=False):
             d.contact_phone,
             d.contact_email,
             d.contact_website,
-            d.rating,
-            d.review_count,
             CASE
                 WHEN d.membership_tier = 'PLATINUM'       THEN 'VERIFIED BUSINESS'
                 WHEN d.membership_tier = 'ASSOCIATE GOLD' THEN 'VERIFIED BUSINESS'
@@ -363,9 +355,9 @@ def run(areas=None, skip_scrape=False):
     by_quality = cur.fetchall()
 
     cur.execute("""
-        SELECT raw_location, COUNT(*)
-        FROM leads WHERE raw_location IS NOT NULL
-        GROUP BY raw_location ORDER BY COUNT(*) DESC LIMIT 10
+        SELECT area, COUNT(*)
+        FROM leads WHERE area IS NOT NULL
+        GROUP BY area ORDER BY COUNT(*) DESC LIMIT 10
     """)
     by_area = cur.fetchall()
 
