@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 from playwright.async_api import async_playwright
+from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -155,6 +156,7 @@ async def discover_area(page, area: str) -> list[dict]:
         logger.info(f"  Searching: {query}")
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await dismiss_google_consent(page)
             await page.wait_for_timeout(2000)
 
             try:
@@ -275,6 +277,7 @@ async def enrich_building(page, building: dict) -> dict:
 
     try:
         await page.goto(maps_url, wait_until="domcontentloaded", timeout=30000)
+        await dismiss_google_consent(page)
 
         # ── FIX: increased wait from 2500ms to 4000ms ──────────────────────
         # The contact panel (phone, website) loads after the map tiles.

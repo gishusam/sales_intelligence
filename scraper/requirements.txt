@@ -1,5 +1,6 @@
 scrapy==2.11.1
 scrapy-playwright==0.0.40
+playwright==1.60.0
 twisted==24.3.0
 redis==5.0.4
 psycopg2-binary==2.9.9

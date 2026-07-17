@@ -173,6 +173,8 @@ CREATE TABLE IF NOT EXISTS apartment_staging (
     search_area        TEXT,
     search_query       TEXT,
     category           TEXT,
+    rating             FLOAT,
+    review_count       INTEGER,
     maps_url           TEXT,
     latitude           FLOAT,
     longitude          FLOAT,
@@ -216,6 +218,8 @@ CREATE TABLE IF NOT EXISTS developer_staging (
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE google_places_leads ADD COLUMN IF NOT EXISTS rating FLOAT;
 ALTER TABLE google_places_leads ADD COLUMN IF NOT EXISTS review_count INTEGER;
+ALTER TABLE apartment_staging ADD COLUMN IF NOT EXISTS rating FLOAT;
+ALTER TABLE apartment_staging ADD COLUMN IF NOT EXISTS review_count INTEGER;
 ALTER TABLE developer_staging ADD COLUMN IF NOT EXISTS rating FLOAT;
 ALTER TABLE developer_staging ADD COLUMN IF NOT EXISTS review_count INTEGER;
 

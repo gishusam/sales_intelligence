@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 from playwright.async_api import async_playwright
+from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,6 +97,16 @@ def save_results(conn, results):
         """, rows)
         conn.commit()
     return len(rows)
+
+
+async def get_page_diagnostic(page):
+    """Small, non-sensitive snapshot for diagnosing blocked/changed Maps pages."""
+    body = await page.locator("body").inner_text()
+    return {
+        "url": page.url,
+        "title": await page.title(),
+        "body": body[:1200],
+    }
 
 
 async def extract_cards(page, area, query):
@@ -230,11 +241,16 @@ async def scrape_area(page, area):
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await dismiss_google_consent(page)
             # Wait for the results feed to appear
             try:
                 await page.wait_for_selector("div.Nv2PK", timeout=15000)
             except Exception:
-                logger.warning(f"  No results loaded for: {query}")
+                logger.warning(
+                    "  No results loaded for %s; page=%s",
+                    query,
+                    await get_page_diagnostic(page),
+                )
                 continue
 
             await page.wait_for_timeout(2000)

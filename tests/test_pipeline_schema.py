@@ -31,14 +31,27 @@ def test_staging_schema_contains_fields_written_by_google_scrapers():
     google_table = schema.split(
         "CREATE TABLE IF NOT EXISTS google_places_leads", 1
     )[1].split(");", 1)[0]
+    apartment_table = schema.split(
+        "CREATE TABLE IF NOT EXISTS apartment_staging", 1
+    )[1].split(");", 1)[0]
     developer_table = schema.split(
         "CREATE TABLE IF NOT EXISTS developer_staging", 1
     )[1].split(");", 1)[0]
 
     assert "rating" in google_table
     assert "review_count" in google_table
+    assert "rating" in apartment_table
+    assert "review_count" in apartment_table
     assert "rating" in developer_table
     assert "review_count" in developer_table
+    assert (
+        "ALTER TABLE apartment_staging ADD COLUMN IF NOT EXISTS rating FLOAT;"
+        in schema
+    )
+    assert (
+        "ALTER TABLE apartment_staging ADD COLUMN IF NOT EXISTS review_count INTEGER;"
+        in schema
+    )
 
 
 def test_leads_schema_contains_notes_used_by_api_routes():

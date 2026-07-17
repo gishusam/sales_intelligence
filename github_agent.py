@@ -51,6 +51,20 @@ def ensure_command_succeeded(result, stage: str):
     raise RuntimeError(f"{stage} failed: {error}")
 
 
+def ensure_scrape_produced_records(metrics: dict):
+    """A clean process exit with no scraped records is not a successful run."""
+    if metrics.get("records_found", 0) <= 0:
+        raise RuntimeError("Scraper completed with zero records")
+
+
+def log_subprocess_output(result, stage: str):
+    """Keep child-process evidence in Cloud Logging even when it exits cleanly."""
+    if result.stdout:
+        logger.info("%s stdout:\n%s", stage, result.stdout[-12000:])
+    if result.stderr:
+        logger.info("%s stderr:\n%s", stage, result.stderr[-12000:])
+
+
 def update_run(run_id: int, data: dict):
     """Persist worker status without depending on a public API callback."""
     values = {
@@ -84,6 +98,130 @@ def update_run(run_id: int, data: dict):
             WHERE id = %(id)s
         """, values)
         conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+RUN_RECORD_SOURCES = {
+    "apartments": {
+        "table": "apartment_staging",
+        "name": "building_name",
+        "area": "search_area",
+        "phone": "contact_phone",
+        "website": "contact_website",
+        "category": "category",
+        "lead_type": "apartment",
+    },
+    "agencies": {
+        "table": "google_places_leads",
+        "name": "business_name",
+        "area": "area",
+        "phone": "phone",
+        "website": "website",
+        "category": "category",
+        "lead_type": "agency",
+    },
+    "developers": {
+        "table": "developer_staging",
+        "name": "developer_name",
+        "area": "area",
+        "phone": "contact_phone",
+        "website": "contact_website",
+        "category": "membership_tier",
+        "lead_type": "developer",
+    },
+}
+
+
+def save_run_records(run_id: int, scraper_type: str) -> int:
+    """Persist the record-level audit consumed by the scraper UI."""
+    source = RUN_RECORD_SOURCES.get(scraper_type)
+    if source is None:
+        raise RuntimeError(f"Unknown scraper type: {scraper_type}")
+
+    table = source["table"]
+    name = source["name"]
+    area = source["area"]
+    phone = source["phone"]
+    website = source["website"]
+    category = source["category"]
+    lead_type = source["lead_type"]
+
+    conn = psycopg2.connect(get_database_url())
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM scraper_run_records WHERE run_id = %(run_id)s",
+            {"run_id": run_id},
+        )
+        cur.execute(f"""
+            INSERT INTO scraper_run_records
+                (run_id, name, area, phone, website, category, outcome, reason)
+            SELECT
+                %(run_id)s,
+                s.{name}, s.{area}, s.{phone}, s.{website}, s.{category},
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1 FROM leads l
+                        WHERE LOWER(l.name) = LOWER(s.{name})
+                          AND l.lead_type = '{lead_type}'
+                          AND l.promoted_at >= r.started_at
+                    ) THEN 'imported'
+                    WHEN EXISTS (
+                        SELECT 1 FROM leads l
+                        WHERE LOWER(l.name) = LOWER(s.{name})
+                          AND l.lead_type = '{lead_type}'
+                    ) THEN 'duplicate'
+                    ELSE 'rejected'
+                END,
+                CASE
+                    WHEN s.{phone} IS NULL AND s.{website} IS NULL
+                        THEN 'no phone or website'
+                    WHEN EXISTS (
+                        SELECT 1 FROM leads l
+                        WHERE LOWER(l.name) = LOWER(s.{name})
+                          AND l.lead_type = '{lead_type}'
+                          AND l.promoted_at < r.started_at
+                    ) THEN 'already exists'
+                    ELSE NULL
+                END
+            FROM {table} s
+            JOIN scraper_runs r ON r.id = %(run_id)s
+            WHERE s.scraped_at >= r.started_at
+        """, {"run_id": run_id})
+        saved = cur.rowcount
+        conn.commit()
+        logger.info("Saved %s UI audit records for run %s", saved, run_id)
+        return saved
+    finally:
+        cur.close()
+        conn.close()
+
+
+def summarize_run_records(run_id: int) -> dict:
+    conn = psycopg2.connect(get_database_url())
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT
+                COUNT(*),
+                COUNT(*) FILTER (WHERE phone IS NOT NULL OR website IS NOT NULL),
+                COUNT(*) FILTER (WHERE outcome = 'imported'),
+                COUNT(*) FILTER (WHERE outcome = 'duplicate'),
+                COUNT(*) FILTER (WHERE outcome = 'rejected')
+            FROM scraper_run_records
+            WHERE run_id = %(run_id)s
+        """, {"run_id": run_id})
+        found, with_contacts, imported, duplicates, rejected = cur.fetchone()
+        return {
+            "records_found": found,
+            "with_contacts": with_contacts,
+            "imported": imported,
+            "updated": 0,
+            "duplicates": duplicates,
+            "rejected": rejected,
+        }
     finally:
         cur.close()
         conn.close()
@@ -190,7 +328,11 @@ def main():
             }
         )
 
+        log_subprocess_output(result, "Scraper")
         ensure_command_succeeded(result, "Scraper")
+
+        scraped_metrics = count_metrics(scraper_type)
+        ensure_scrape_produced_records(scraped_metrics)
 
         logger.info("Scrape done — promoting to leads...")
 
@@ -204,10 +346,13 @@ def main():
                  "POSTGRES_USER": os.getenv("POSTGRES_USER"),
                  "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD")}
         )
+        log_subprocess_output(promotion, "Promotion")
         ensure_command_succeeded(promotion, "Promotion")
 
+        save_run_records(run_id, scraper_type)
         duration = time.time() - start
-        metrics  = count_metrics(scraper_type)
+        metrics = summarize_run_records(run_id)
+        ensure_scrape_produced_records(metrics)
         logger.info(f"Done in {duration:.0f}s — {metrics}")
 
         update_run(run_id, {

@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 from playwright.async_api import async_playwright
+from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -262,6 +263,7 @@ async def enrich_developer(page, name: str) -> dict:
 
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await dismiss_google_consent(page)
         await page.wait_for_timeout(2500)
 
         # Check if it went straight to a single place page (h1 visible)

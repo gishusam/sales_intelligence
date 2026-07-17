@@ -13,6 +13,7 @@ import subprocess
 import logging
 import requests
 import psycopg2
+from urllib.parse import urlparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,25 +22,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────
-RAILWAY_API = "https://salesintelligence-production-8d1d.up.railway.app"
-AGENT_EMAIL = "brian@nyumbazetu.com"
-AGENT_PASSWORD = "Nyumba2024"
+RAILWAY_API = os.getenv(
+    "RAILWAY_API", "https://salesintelligence-production-8d1d.up.railway.app"
+)
+AGENT_EMAIL = os.getenv("RAILWAY_AGENT_EMAIL", "")
+AGENT_PASSWORD = os.getenv("RAILWAY_AGENT_PASSWORD", "")
+RAILWAY_DB_URL = os.getenv("RAILWAY_DATABASE_URL", "")
+_railway_db = urlparse(RAILWAY_DB_URL)
 
 # Railway DB — scrapers write here, pipeline promotes here
 RAILWAY_ENV = {
     **os.environ,
-    "POSTGRES_HOST":     "thomas.proxy.rlwy.net",
-    "POSTGRES_PORT":     "58979",
-    "POSTGRES_DB":       "railway",
-    "POSTGRES_USER":     "postgres",
-    "POSTGRES_PASSWORD": "aXBqoLntBYTfbmnVyXriHWoaUuSQirZE",
-    "REDIS_URL":         "redis://localhost:6379/0",
+    "POSTGRES_HOST":     os.getenv("POSTGRES_HOST", _railway_db.hostname or ""),
+    "POSTGRES_PORT":     os.getenv("POSTGRES_PORT", str(_railway_db.port or "")),
+    "POSTGRES_DB":       os.getenv("POSTGRES_DB", _railway_db.path.lstrip("/")),
+    "POSTGRES_USER":     os.getenv("POSTGRES_USER", _railway_db.username or ""),
+    "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD", _railway_db.password or ""),
+    "REDIS_URL":         os.getenv("REDIS_URL", "redis://localhost:6379/0"),
 }
 
-RAILWAY_DB_URL = (
-    "postgresql://postgres:aXBqoLntBYTfbmnVyXriHWoaUuSQirZE"
-    "@thomas.proxy.rlwy.net:58979/railway"
-)
 
 SCRAPER_COMMANDS = {
     "apartments": ["python", "scraper/spiders/apartments.py", "--areas"],
@@ -336,6 +337,16 @@ def execute_run(run: dict, token: str):
 # ── Main loop ─────────────────────────────────────────────────────
 
 def main():
+    missing = [
+        name for name, value in {
+            "RAILWAY_AGENT_EMAIL": AGENT_EMAIL,
+            "RAILWAY_AGENT_PASSWORD": AGENT_PASSWORD,
+            "RAILWAY_DATABASE_URL": RAILWAY_DB_URL,
+        }.items() if not value
+    ]
+    if missing:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
     logger.info("Scraper agent starting...")
     logger.info(f"Polling {RAILWAY_API} every 30s for pending jobs")
     logger.info(f"Writing scraped data to Railway DB")
