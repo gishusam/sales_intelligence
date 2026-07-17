@@ -19,6 +19,7 @@ class Lead(Base):
     source_url       = Column(String)
     score            = Column(Float, default=0.0)
     status           = Column(String, default="new")
+    notes            = Column(Text)
     assigned_to      = Column(String)
     last_contacted   = Column(DateTime(timezone=True))
     contact_attempts = Column(Integer, default=0)

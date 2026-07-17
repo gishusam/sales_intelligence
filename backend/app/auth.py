@@ -3,7 +3,6 @@ auth.py — JWT authentication helpers
 Used by: login endpoint, route protection middleware, admin script
 """
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -11,9 +10,10 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from app.config import settings
 
 # ── Config ───────────────────────────────────────────────────────
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-in-production-please")
+SECRET_KEY = settings.JWT_SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 1 week
 

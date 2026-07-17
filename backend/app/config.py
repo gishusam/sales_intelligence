@@ -11,11 +11,12 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "db"
     POSTGRES_PORT: int = 5432
     SECRET_KEY: str
+    JWT_SECRET_KEY: str
     DEBUG: bool = False
     ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"
         "http://127.0.0.1:8080,"
-        "https://preview--nyumba-lead-hub.lovable.app",
+        "https://preview--nyumba-lead-hub.lovable.app,"
         "https://nyumba-lead-hub.vercel.app"
     )
 
