@@ -166,26 +166,21 @@ def run(areas=None, skip_scrape=False):
     # 5a: From listing_staging (BuyRentKenya + Jiji)
     cur.execute("""
         INSERT INTO leads (
-            name, owner_name, owner_type, owner_url,
-            raw_location, raw_price, phone, email,
-            unit_count, score, status,
-            google_rating, google_reviews, lead_quality,
+            name, owner_name, owner_type,
+            phone, email, website, area,
+            score, status, lead_quality,
             lead_type, source, source_url, promoted_at
         )
         SELECT DISTINCT ON (s.source_url)
             s.property_name,
             s.owner_name,
             s.owner_type,
-            s.owner_website,
-            s.area,
-            s.raw_price,
             COALESCE(s.owner_phone, g.phone),
             s.owner_email,
-            s.bedrooms,
+            COALESCE(s.owner_website, g.website),
+            s.area,
             s.score,
             'new',
-            g.rating,
-            g.review_count,
             CASE
                 WHEN s.score >= 65 AND g.rating IS NOT NULL
                     THEN 'VERIFIED + ACTIVE'
@@ -362,7 +357,7 @@ def run(areas=None, skip_scrape=False):
     by_area = cur.fetchall()
 
     cur.execute("""
-        SELECT COALESCE(owner_name, name), raw_location, phone, score, lead_quality
+        SELECT COALESCE(owner_name, name), area, phone, score, lead_quality
         FROM leads
         WHERE phone IS NOT NULL
         ORDER BY score DESC NULLS LAST

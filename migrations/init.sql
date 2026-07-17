@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS leads (
     source_url          TEXT,
     score               FLOAT DEFAULT 0.0,
     status              TEXT DEFAULT 'new',
+    notes               TEXT,
     lead_quality        TEXT,
     assigned_to         TEXT,
     last_contacted      TIMESTAMPTZ,
@@ -156,6 +157,8 @@ CREATE TABLE IF NOT EXISTS google_places_leads (
     address       TEXT,
     phone         TEXT,
     website       TEXT,
+    rating        FLOAT,
+    review_count  INTEGER,
     category      TEXT,
     search_query  TEXT,
     maps_url      TEXT,
@@ -197,6 +200,8 @@ CREATE TABLE IF NOT EXISTS developer_staging (
     contact_email     TEXT,
     contact_website   TEXT,
     address           TEXT,
+    rating            FLOAT,
+    review_count      INTEGER,
     maps_url          TEXT,
     enrichment_status TEXT DEFAULT 'pending',
     enriched_at       TIMESTAMPTZ,
@@ -205,3 +210,34 @@ CREATE TABLE IF NOT EXISTS developer_staging (
     area              TEXT,
     CONSTRAINT dev_staging_name_uniq UNIQUE (developer_name)
 );
+
+-- Existing databases created before rating enrichment need these additive
+-- changes because CREATE TABLE IF NOT EXISTS does not alter a table.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE google_places_leads ADD COLUMN IF NOT EXISTS rating FLOAT;
+ALTER TABLE google_places_leads ADD COLUMN IF NOT EXISTS review_count INTEGER;
+ALTER TABLE developer_staging ADD COLUMN IF NOT EXISTS rating FLOAT;
+ALTER TABLE developer_staging ADD COLUMN IF NOT EXISTS review_count INTEGER;
+
+-- The application owns authorization. Keep Supabase's public Data API from
+-- bypassing FastAPI/JWT even if default public-schema grants are present.
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lead_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lead_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scraper_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE scraper_run_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE listing_staging ENABLE ROW LEVEL SECURITY;
+ALTER TABLE google_places_leads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE apartment_staging ENABLE ROW LEVEL SECURITY;
+ALTER TABLE developer_staging ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE users, leads, lead_notes, lead_events,
+    scraper_runs, scraper_run_records, listing_staging,
+    google_places_leads, apartment_staging, developer_staging
+    FROM anon, authenticated;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE ALL ON TABLES FROM anon, authenticated;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
+    REVOKE ALL ON SEQUENCES FROM anon, authenticated;
