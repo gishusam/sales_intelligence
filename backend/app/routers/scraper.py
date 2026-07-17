@@ -10,9 +10,11 @@ GET  /api/scraper/runs/{id} — poll a specific run (live status)
 import subprocess
 import threading
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional, List
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -37,6 +39,50 @@ SCRAPER_COMMANDS = {
 class RunRequest(BaseModel):
     scraper_type: str
     areas: List[str]
+
+
+def build_cloud_run_job_request(run_id: int, scraper_type: str,
+                                areas: List[str]) -> dict:
+    """Build the per-execution overrides for the scraper Cloud Run Job."""
+    return {
+        "overrides": {
+            "containerOverrides": [{
+                "args": [
+                    "--run-id", str(run_id),
+                    "--scraper-type", scraper_type,
+                    "--areas", ",".join(areas),
+                ]
+            }],
+            "taskCount": 1,
+            "timeout": "900s",
+        }
+    }
+
+
+def execute_cloud_run_job(project: str, region: str, job: str,
+                          payload: dict, http_client=httpx) -> str:
+    """Execute one Cloud Run Job using this service's metadata identity."""
+    token_response = http_client.get(
+        "http://metadata.google.internal/computeMetadata/v1/instance/"
+        "service-accounts/default/token",
+        headers={"Metadata-Flavor": "Google"},
+        timeout=5,
+    )
+    token_response.raise_for_status()
+    access_token = token_response.json()["access_token"]
+
+    response = http_client.post(
+        f"https://run.googleapis.com/v2/projects/{project}/locations/"
+        f"{region}/jobs/{job}:run",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json()["name"]
 
 
 def run_scraper_background(run_id: int, scraper_type: str,
@@ -198,43 +244,48 @@ def trigger_run(
 
     run_id = row.id
 
-    # Build DB URL for background thread
-    from app.config import settings
-    db_url = settings.database_url
+    project = os.getenv("CLOUD_RUN_PROJECT", "")
+    region = os.getenv("CLOUD_RUN_REGION", "")
+    job = os.getenv("SCRAPER_CLOUD_RUN_JOB", "")
+    if not all((project, region, job)):
+        db.execute(text("""
+            UPDATE scraper_runs
+            SET status = 'failed', error = 'Cloud Run Job is not configured',
+                finished_at = NOW()
+            WHERE id = :id
+        """), {"id": run_id})
+        db.commit()
+        raise HTTPException(503, "Scraper worker is not configured")
 
-    # Trigger GitHub Actions workflow
-    import os, httpx
-    github_token = os.getenv("GITHUB_TOKEN", "")
-    github_repo  = os.getenv("GITHUB_REPO", "")  # e.g. "samwelngugi/nyumba-zetu-intelligence"
+    try:
+        operation = execute_cloud_run_job(
+            project,
+            region,
+            job,
+            build_cloud_run_job_request(
+                run_id, body.scraper_type, body.areas
+            ),
+        )
+    except Exception as exc:
+        logger.exception("Cloud Run Job dispatch failed for run %s", run_id)
+        db.execute(text("""
+            UPDATE scraper_runs
+            SET status = 'failed', error = :error, finished_at = NOW()
+            WHERE id = :id
+        """), {
+            "id": run_id,
+            "error": f"Worker dispatch failed: {str(exc)[:400]}",
+        })
+        db.commit()
+        raise HTTPException(502, "Could not start scraper worker") from exc
 
-    if github_token and github_repo:
-        try:
-            resp = httpx.post(
-                f"https://api.github.com/repos/{github_repo}/dispatches",
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Accept":        "application/vnd.github.v3+json",
-                },
-                json={
-                    "event_type": "run_scraper",
-                    "client_payload": {
-                        "run_id":       run_id,
-                        "scraper_type": body.scraper_type,
-                        "areas":        ",".join(body.areas),
-                    }
-                },
-                timeout=10
-            )
-            if resp.status_code == 204:
-                logger.info(f"GitHub Actions triggered for run {run_id}")
-            else:
-                logger.warning(f"GitHub dispatch failed: {resp.status_code} {resp.text}")
-        except Exception as e:
-            logger.error(f"GitHub dispatch error: {e}")
-    else:
-        logger.warning("GITHUB_TOKEN or GITHUB_REPO not set — scraper won't run")
-
-    return {"run_id": run_id, "status": "running", "message": f"{body.scraper_type} scraper started", "areas": body.areas}
+    return {
+        "run_id": run_id,
+        "status": "running",
+        "message": f"{body.scraper_type} scraper started",
+        "areas": body.areas,
+        "operation": operation,
+    }
 
 
 @router.get("/runs")
