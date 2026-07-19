@@ -691,7 +691,7 @@ async def import_leads(
 
             # Check if already exists
             existing = db.execute(
-                text("SELECT id, phone, website, email FROM leads WHERE name_normalized = :n"),
+                text("SELECT id, phone, website, email FROM leads WHERE LOWER(name) = :n"),
                 {"n": name_norm}
             ).fetchone()
 
@@ -712,7 +712,7 @@ async def import_leads(
                             website    = COALESCE(:website, website),
                             email      = COALESCE(:email,   email),
                             updated_at = NOW()
-                        WHERE name_normalized = :n
+                        WHERE LOWER(name) = :n
                     """), {"phone": phone, "website": website, "email": email, "n": name_norm})
                     db.commit()
                     updated_records.append({
@@ -733,11 +733,11 @@ async def import_leads(
                 INSERT INTO leads (
                     name, owner_name, phone, email, website,
                     area, lead_type, source, score,
-                    status, name_normalized
+                    status
                 ) VALUES (
                     :name, :owner, :phone, :email, :website,
                     :area, :lead_type, 'bulk_upload', 40,
-                    'new', :name_norm
+                    'new'
                 )
             """), {
                 "name":      name,
@@ -747,7 +747,6 @@ async def import_leads(
                 "website":   website,
                 "area":      area,
                 "lead_type": ltype,
-                "name_norm": name_norm,
             })
             db.commit()
 

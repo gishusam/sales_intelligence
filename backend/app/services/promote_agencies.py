@@ -51,7 +51,7 @@ def promote_agencies(session, area):
             text("""
                 SELECT id
                 FROM leads
-                WHERE name_normalized = :name
+                WHERE LOWER(name) = :name
             """),
             {"name": name}
         ).fetchone()
@@ -96,8 +96,7 @@ def promote_agencies(session, area):
                         lead_type,
                         source,
                         score,
-                        status,
-                        name_normalized
+                        status
                     )
                     VALUES (
                         :name,
@@ -107,8 +106,7 @@ def promote_agencies(session, area):
                         'agency',
                         'google_places',
                         :score,
-                        'new',
-                        :normalized
+                        'new'
                     )
                 """),
                 {
@@ -117,7 +115,6 @@ def promote_agencies(session, area):
                     "website": row.website,
                     "area": row.area,
                     "score": score,
-                    "normalized": name,
                 }
             )
 
