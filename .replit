@@ -12,3 +12,31 @@ expertMode = true
 [userenv.shared]
 ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8080,https://preview--nyumba-lead-hub.lovable.app,https://nyumba-lead-hub.vercel.app"
 DEBUG = "true"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
