@@ -1,7 +1,14 @@
-modules = ["python-3.12"]
+modules = ["python-3.12", "postgresql-16"]
 
 [nix]
 channel = "stable-25_05"
+packages = ["cargo", "libiconv", "libxcrypt", "rustc"]
 
 [agent]
 expertMode = true
+
+[userenv]
+
+[userenv.shared]
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:8080,https://preview--nyumba-lead-hub.lovable.app,https://nyumba-lead-hub.vercel.app"
+DEBUG = "true"
