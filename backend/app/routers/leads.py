@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.auth import get_current_user, CurrentUser
 
 router = APIRouter(prefix="/api", tags=["leads"])
 
@@ -233,7 +234,57 @@ def get_leads(
     }
 
 
-# ── 7. Search ──────────────────────────────────────────────────────
+# ── 7. My leads ────────────────────────────────────────────────────
+
+@router.get("/leads/mine")
+def get_my_leads(
+    page:  int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db:    Session = Depends(get_db),
+    user:  CurrentUser = Depends(get_current_user),
+):
+    """
+    Returns leads assigned to the current user.
+    Matches assigned_to against both the user's name and their id (as a string)
+    since the frontend may send either form.
+    """
+    offset = (page - 1) * limit
+
+    total = db.execute(text("""
+        SELECT COUNT(*) FROM leads
+        WHERE assigned_to = :name OR assigned_to = :uid
+    """), {"name": user.name, "uid": str(user.id)}).scalar()
+
+    rows = db.execute(text("""
+        SELECT id, name, owner_name, phone, email, website,
+               area, lead_type, source, score, status,
+               notes, assigned_to, last_contacted, created_at, updated_at
+        FROM leads
+        WHERE assigned_to = :name OR assigned_to = :uid
+        ORDER BY score DESC, created_at DESC
+        LIMIT :limit OFFSET :offset
+    """), {"name": user.name, "uid": str(user.id), "limit": limit, "offset": offset}).fetchall()
+
+    return {
+        "total": total, "page": page, "limit": limit,
+        "pages": -(-total // limit),
+        "data": [
+            {
+                "id": r.id, "name": r.name, "owner_name": r.owner_name,
+                "phone": r.phone, "email": r.email, "website": r.website,
+                "area": r.area, "lead_type": r.lead_type, "source": r.source,
+                "score": r.score, "status": r.status, "notes": r.notes,
+                "assigned_to": r.assigned_to,
+                "last_contacted": r.last_contacted.isoformat() if r.last_contacted else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ── 8. Search ──────────────────────────────────────────────────────
 
 @router.get("/leads/search")
 def search_leads(
