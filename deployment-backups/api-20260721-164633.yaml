@@ -1,0 +1,84 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    run.googleapis.com/maxScale: '1'
+    run.googleapis.com/urls: '["https://sales-intelligence-api-693887939589.europe-west1.run.app","https://sales-intelligence-api-2c4dpa66cq-ew.a.run.app"]'
+  labels:
+    cloud.googleapis.com/location: europe-west1
+  name: sales-intelligence-api
+  namespace: '693887939589'
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '3'
+        run.googleapis.com/client-name: gcloud
+        run.googleapis.com/client-version: 572.0.0
+        run.googleapis.com/startup-cpu-boost: 'true'
+      labels:
+        client.knative.dev/nonce: nibeyzuwvt
+        run.googleapis.com/startupProbeType: Default
+    spec:
+      containerConcurrency: 20
+      containers:
+      - env:
+        - name: POSTGRES_HOST
+          value: aws-0-eu-west-1.pooler.supabase.com
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: POSTGRES_DB
+          value: postgres
+        - name: POSTGRES_USER
+          value: postgres.agwjduiekszcreehnhyz
+        - name: PGSSLMODE
+          value: require
+        - name: DEBUG
+          value: 'false'
+        - name: CLOUD_RUN_PROJECT
+          value: sales-intelligens
+        - name: CLOUD_RUN_REGION
+          value: europe-west1
+        - name: SCRAPER_CLOUD_RUN_JOB
+          value: sales-scraper
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-db-url
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-db-password
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-app-secret
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-jwt-secret
+        image: europe-west1-docker.pkg.dev/sales-intelligens/sales-intelligence/api:99f0b5a
+        ports:
+        - containerPort: 8000
+          name: http1
+        resources:
+          limits:
+            cpu: '1'
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 1
+          periodSeconds: 240
+          tcpSocket:
+            port: 8000
+          timeoutSeconds: 240
+      serviceAccountName: sales-api@sales-intelligens.iam.gserviceaccount.com
+      timeoutSeconds: 60
+  traffic:
+  - latestRevision: true
+    percent: 100
