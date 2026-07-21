@@ -245,3 +245,24 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
     REVOKE ALL ON TABLES FROM anon, authenticated;
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
     REVOKE ALL ON SEQUENCES FROM anon, authenticated;
+
+-- ── Email outreach ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_outreach (
+    id              SERIAL PRIMARY KEY,
+    lead_id         INTEGER NOT NULL,
+    sent_by         INTEGER NOT NULL,  -- user id
+    sent_from       TEXT NOT NULL,     -- max@nyumbazetu.com
+    sent_to         TEXT,              -- recipient email
+    subject         TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    email_type      TEXT NOT NULL,     -- cold / followup
+    template_used   TEXT,             -- template_1 / template_2 etc
+    status          TEXT DEFAULT 'draft',  -- draft / sent / failed
+    sent_at         TIMESTAMPTZ,
+    follow_up_date  DATE,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS email_lead_id_idx ON email_outreach(lead_id);
+CREATE INDEX IF NOT EXISTS email_sent_by_idx ON email_outreach(sent_by);
+CREATE INDEX IF NOT EXISTS email_status_idx  ON email_outreach(status);
