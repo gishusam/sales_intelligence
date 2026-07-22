@@ -410,6 +410,57 @@ def get_lead_timeline(
 
 VALID_STATUSES = {"new", "called", "demo_booked", "won", "lost"}
 
+
+
+@router.patch("/leads/{lead_id}/assign")
+def assign_lead(
+    lead_id: int,
+    db:      Session = Depends(get_db),
+    user:    CurrentUser = Depends(get_current_user),
+):
+    """
+    Assign a lead to the currently logged-in user.
+    Called when rep clicks "Assign to me" button.
+    Uses JWT identity — no body needed.
+    """
+    result = db.execute(text("""
+        UPDATE leads SET
+            assigned_to = :user_name,
+            updated_at  = NOW()
+        WHERE id = :id
+        RETURNING id, name, assigned_to
+    """), {"id": lead_id, "user_name": user.name})
+    db.commit()
+
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    # Log to events
+    db.execute(text("""
+        INSERT INTO lead_events (
+            lead_id, event_type, to_value,
+            changed_by, note, created_at
+        ) VALUES (
+            :lead_id, 'assigned', :to_value,
+            :changed_by, :note, NOW()
+        )
+    """), {
+        "lead_id":    lead_id,
+        "to_value":   user.name,
+        "changed_by": user.name,
+        "note":       f"Lead assigned to {user.name}",
+    })
+    db.commit()
+
+    return {
+        "id":          row.id,
+        "name":        row.name,
+        "assigned_to": row.assigned_to,
+        "message":     f"Lead assigned to {user.name}",
+    }
+
+
 @router.patch("/leads/{lead_id}/status")
 def update_status(
     lead_id: int,
