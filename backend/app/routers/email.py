@@ -1,30 +1,36 @@
 """
-email.py — Email outreach + follow-up system
+email.py — Email outreach + follow-up system with attachment support
 
-Currently runs in MOCK MODE — logs emails without sending.
-To enable real sending, set these env vars:
+Configure via .env:
     SMTP_HOST     = smtp.gmail.com
     SMTP_PORT     = 587
-    SMTP_USER     = your-email@nyumbazetu.com
-    SMTP_PASSWORD = your-app-password
+    SMTP_USER     = nyumbazetu.test@gmail.com
+    SMTP_PASSWORD = your-16-char-app-password
+    SMTP_FROM_NAME = Nyumba Zetu Sales
+
+Swap to production credentials when ready — no code changes needed.
 
 Endpoints:
-    POST /api/leads/{id}/email/preview  — generate preview for rep to review
-    POST /api/leads/{id}/email/send     — confirm and send
-    GET  /api/leads/{id}/emails         — email history for a lead
-    GET  /api/emails/outreach           — all outreach (manager view)
+    POST /api/leads/{id}/email/preview        — generate preview
+    POST /api/leads/{id}/email/send           — send with optional attachment
+    POST /api/leads/{id}/email/send-with-file — send with file upload
+    GET  /api/leads/{id}/emails               — email history
+    GET  /api/emails/outreach                 — manager view
 """
 
 import os
 import logging
 import smtplib
+import base64
 from datetime import date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from random import randint
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -35,12 +41,13 @@ from app.auth import get_current_user, CurrentUser
 router = APIRouter(prefix="/api", tags=["email"])
 logger = logging.getLogger(__name__)
 
-# ── SMTP config ───────────────────────────────────────────────────
-SMTP_HOST     = os.getenv("SMTP_HOST", "")
-SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER     = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-MOCK_MODE     = not bool(SMTP_HOST)
+# ── SMTP config from environment ──────────────────────────────────
+SMTP_HOST      = os.getenv("SMTP_HOST", "")
+SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER      = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Nyumba Zetu Sales")
+MOCK_MODE      = not bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD)
 
 
 # ── Templates ─────────────────────────────────────────────────────
@@ -163,24 +170,57 @@ def build_context(lead: dict, user: CurrentUser) -> dict:
     }
 
 
-def send_smtp(from_email: str, to_email: str,
-              subject: str, body: str) -> bool:
+def send_smtp(
+    from_email: str,
+    to_email: str,
+    subject: str,
+    body: str,
+    attachment_data: bytes = None,
+    attachment_name: str = None,
+    attachment_type: str = "application/pdf",
+) -> bool:
+    """
+    Send email via SMTP with optional attachment.
+    In mock mode logs the email without sending.
+    """
     if MOCK_MODE:
         logger.info(
-            f"[MOCK] From:{from_email} → To:{to_email} | {subject[:50]}"
+            f"[MOCK] From:{from_email} → To:{to_email} | "
+            f"{subject[:50]} | attachment:{attachment_name or 'none'}"
         )
         return True
+
     try:
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart()
         msg["Subject"] = subject
-        msg["From"]    = from_email
+        msg["From"]    = f"{SMTP_FROM_NAME} <{from_email}>"
         msg["To"]      = to_email
+        msg["Reply-To"] = from_email
+
         msg.attach(MIMEText(body, "plain"))
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASSWORD)
-            s.sendmail(from_email, to_email, msg.as_string())
+
+        # Add attachment if provided
+        if attachment_data and attachment_name:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(attachment_data)
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename={attachment_name}"
+            )
+            msg.attach(part)
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(from_email, to_email, msg.as_string())
+
+        logger.info(
+            f"Email sent: {from_email} → {to_email}"
+            f"{' (+attachment)' if attachment_name else ''}"
+        )
         return True
+
     except Exception as e:
         logger.error(f"SMTP error: {e}")
         return False
@@ -195,9 +235,11 @@ class PreviewRequest(BaseModel):
 
 
 class SendRequest(BaseModel):
-    email_id:   int
-    to_email:   Optional[str] = None
-    final_body: str
+    email_id:        int
+    to_email:        Optional[str] = None
+    final_body:      str
+    attachment_name: Optional[str] = None
+    attachment_b64:  Optional[str] = None  # base64 encoded file
 
 
 # ── Endpoints ─────────────────────────────────────────────────────
@@ -209,7 +251,7 @@ def preview_email(
     db:      Session = Depends(get_db),
     user:    CurrentUser = Depends(get_current_user),
 ):
-    """Generate email preview — rep reviews before sending."""
+    """Generate email preview for rep to review before sending."""
     lead_row = db.execute(text("""
         SELECT id, name, owner_name, email, phone,
                area, lead_type, contact_person, website
@@ -226,14 +268,13 @@ def preview_email(
         template      = FOLLOWUP_TEMPLATE
         template_name = "followup"
     else:
-        template      = COLD_TEMPLATES.get(
+        template = COLD_TEMPLATES.get(
             body.template_name, COLD_TEMPLATES["template_1"]
         )
         template_name = body.template_name
 
     filled     = fill_template(template, context)
     final_body = body.custom_body or filled["body"]
-
     follow_up_date = (
         date.today() + timedelta(days=randint(7, 10))
     ).isoformat()
@@ -250,32 +291,35 @@ def preview_email(
         )
         RETURNING id
     """), {
-        "lead_id":       lead_id,
-        "sent_by":       user.id,
-        "sent_from":     user.email,
-        "sent_to":       lead.get("email"),
-        "subject":       filled["subject"],
-        "body":          final_body,
-        "email_type":    body.email_type,
-        "template_used": template_name,
+        "lead_id":        lead_id,
+        "sent_by":        user.id,
+        "sent_from":      user.email,
+        "sent_to":        lead.get("email"),
+        "subject":        filled["subject"],
+        "body":           final_body,
+        "email_type":     body.email_type,
+        "template_used":  template_name,
         "follow_up_date": follow_up_date,
     }).fetchone()
     db.commit()
 
     return {
-        "email_id":      row.id,
-        "from":          user.email,
-        "to":            lead.get("email"),
-        "to_name":       context["contact_name"],
-        "company":       lead.get("name"),
-        "subject":       filled["subject"],
-        "body":          final_body,
-        "email_type":    body.email_type,
-        "template_used": template_name,
-        "has_email":     bool(lead.get("email")),
+        "email_id":       row.id,
+        "from":           user.email,
+        "from_display":   f"{SMTP_FROM_NAME} <{user.email}>",
+        "to":             lead.get("email"),
+        "to_name":        context["contact_name"],
+        "company":        lead.get("name"),
+        "subject":        filled["subject"],
+        "body":           final_body,
+        "email_type":     body.email_type,
+        "template_used":  template_name,
+        "has_email":      bool(lead.get("email")),
         "follow_up_date": follow_up_date,
-        "status":        "draft",
-        "mock_mode":     MOCK_MODE,
+        "status":         "draft",
+        "mock_mode":      MOCK_MODE,
+        "smtp_configured": not MOCK_MODE,
+        "available_templates": list(COLD_TEMPLATES.keys()),
     }
 
 
@@ -286,7 +330,10 @@ def send_email(
     db:      Session = Depends(get_db),
     user:    CurrentUser = Depends(get_current_user),
 ):
-    """Rep confirms and sends the previewed email."""
+    """
+    Confirm and send the previewed email.
+    Supports base64-encoded file attachment via attachment_b64.
+    """
     draft = db.execute(text("""
         SELECT id, sent_from, sent_to, subject,
                email_type, follow_up_date
@@ -300,21 +347,149 @@ def send_email(
     to_email = body.to_email or draft.sent_to
     if not to_email:
         raise HTTPException(400,
-            "No email address — add one manually in the to_email field"
+            "No email address — provide to_email in the request body"
         )
 
-    sent   = send_smtp(draft.sent_from, to_email, draft.subject, body.final_body)
+    # Decode attachment if provided
+    attachment_data = None
+    if body.attachment_b64 and body.attachment_name:
+        try:
+            attachment_data = base64.b64decode(body.attachment_b64)
+        except Exception:
+            raise HTTPException(400, "Invalid base64 attachment data")
+
+    sent   = send_smtp(
+        from_email      = draft.sent_from,
+        to_email        = to_email,
+        subject         = draft.subject,
+        body            = body.final_body,
+        attachment_data = attachment_data,
+        attachment_name = body.attachment_name,
+    )
+    status = "sent" if sent else "failed"
+
+    # Update draft
+    db.execute(text("""
+        UPDATE email_outreach SET
+            body              = :body,
+            sent_to           = :sent_to,
+            status            = :status,
+            sent_at           = NOW()
+        WHERE id = :id
+    """), {
+        "body":    body.final_body,
+        "sent_to": to_email,
+        "status":  status,
+        "id":      body.email_id,
+    })
+
+    # Update lead
+    db.execute(text("""
+        UPDATE leads SET
+            last_contacted   = NOW(),
+            follow_up_date   = :follow_up_date,
+            contact_attempts = COALESCE(contact_attempts, 0) + 1,
+            email_sent_at    = NOW(),
+            updated_at       = NOW()
+        WHERE id = :id
+    """), {"id": lead_id, "follow_up_date": draft.follow_up_date})
+
+    # Log to timeline
+    db.execute(text("""
+        INSERT INTO lead_events (
+            lead_id, event_type, to_value,
+            changed_by, note, created_at
+        ) VALUES (
+            :lead_id, 'email_sent', :to_email,
+            :by, :note, NOW()
+        )
+    """), {
+        "lead_id":  lead_id,
+        "to_email": to_email,
+        "by":       user.name,
+        "note": (
+            f"{draft.email_type} email sent by {user.name}"
+            f"{' with attachment' if attachment_data else ''}"
+        ),
+    })
+    db.commit()
+
+    return {
+        "status":          status,
+        "sent_to":         to_email,
+        "sent_from":       draft.sent_from,
+        "email_type":      draft.email_type,
+        "has_attachment":  bool(attachment_data),
+        "attachment_name": body.attachment_name,
+        "follow_up_date":  draft.follow_up_date.isoformat() if draft.follow_up_date else None,
+        "mock_mode":       MOCK_MODE,
+        "message": (
+            "Email logged — set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env to send real emails"
+            if MOCK_MODE else
+            f"Email sent to {to_email}"
+            + (f" with {body.attachment_name}" if body.attachment_name else "")
+        ),
+    }
+
+
+@router.post("/leads/{lead_id}/email/send-with-file")
+async def send_email_with_file(
+    lead_id:    int,
+    email_id:   int = Form(...),
+    final_body: str = Form(...),
+    to_email:   Optional[str] = Form(None),
+    attachment: Optional[UploadFile] = File(None),
+    db:         Session = Depends(get_db),
+    user:       CurrentUser = Depends(get_current_user),
+):
+    """
+    Send email with a real file upload (multipart form).
+    Use this endpoint when the rep uploads a PDF or document.
+    Max file size: 5MB.
+    """
+    draft = db.execute(text("""
+        SELECT id, sent_from, sent_to, subject,
+               email_type, follow_up_date
+        FROM email_outreach
+        WHERE id = :id AND lead_id = :lead_id AND status = 'draft'
+    """), {"id": email_id, "lead_id": lead_id}).fetchone()
+
+    if not draft:
+        raise HTTPException(404, "Draft not found")
+
+    recipient = to_email or draft.sent_to
+    if not recipient:
+        raise HTTPException(400, "No email address provided")
+
+    # Read attachment
+    attachment_data = None
+    attachment_name = None
+    if attachment and attachment.filename:
+        attachment_data = await attachment.read()
+        attachment_name = attachment.filename
+        # 5MB limit
+        if len(attachment_data) > 5 * 1024 * 1024:
+            raise HTTPException(400, "Attachment too large — maximum 5MB")
+
+    sent   = send_smtp(
+        from_email      = draft.sent_from,
+        to_email        = recipient,
+        subject         = draft.subject,
+        body            = final_body,
+        attachment_data = attachment_data,
+        attachment_name = attachment_name,
+    )
     status = "sent" if sent else "failed"
 
     db.execute(text("""
         UPDATE email_outreach SET
-            body          = :body,
-            sent_to       = :sent_to,
-            status        = :status,
-            sent_at       = NOW()
+            body    = :body,
+            sent_to = :sent_to,
+            status  = :status,
+            sent_at = NOW()
         WHERE id = :id
-    """), {"body": body.final_body, "sent_to": to_email,
-           "status": status, "id": body.email_id})
+    """), {"body": final_body, "sent_to": recipient,
+           "status": status, "id": email_id})
 
     db.execute(text("""
         UPDATE leads SET
@@ -328,28 +503,34 @@ def send_email(
 
     db.execute(text("""
         INSERT INTO lead_events (
-            lead_id, event_type, to_value, changed_by, note, created_at
+            lead_id, event_type, to_value,
+            changed_by, note, created_at
         ) VALUES (
-            :lead_id, 'email_sent', :to_email, :by, :note, NOW()
+            :lead_id, 'email_sent', :to_email,
+            :by, :note, NOW()
         )
     """), {
         "lead_id":  lead_id,
-        "to_email": to_email,
+        "to_email": recipient,
         "by":       user.name,
-        "note":     f"{draft.email_type} email sent by {user.name}",
+        "note": (
+            f"{draft.email_type} email sent by {user.name}"
+            f"{f' + {attachment_name}' if attachment_name else ''}"
+        ),
     })
     db.commit()
 
     return {
-        "status":         status,
-        "sent_to":        to_email,
-        "sent_from":      draft.sent_from,
-        "email_type":     draft.email_type,
-        "follow_up_date": draft.follow_up_date.isoformat() if draft.follow_up_date else None,
-        "mock_mode":      MOCK_MODE,
+        "status":          status,
+        "sent_to":         recipient,
+        "has_attachment":  bool(attachment_data),
+        "attachment_name": attachment_name,
+        "follow_up_date":  draft.follow_up_date.isoformat() if draft.follow_up_date else None,
+        "mock_mode":       MOCK_MODE,
         "message": (
-            "Email logged in mock mode — set SMTP_HOST to enable real sending"
-            if MOCK_MODE else f"Email sent to {to_email}"
+            "Email logged in mock mode"
+            if MOCK_MODE else
+            f"Email sent to {recipient}"
         ),
     }
 
@@ -363,9 +544,9 @@ def get_lead_emails(
     """Email history for a lead — powers the contact timeline."""
     rows = db.execute(text("""
         SELECT e.id, e.sent_from, e.sent_to, e.subject,
-               e.email_type, e.template_used, e.status,
-               e.sent_at, e.follow_up_date, e.created_at,
-               u.name AS sent_by_name
+               e.body, e.email_type, e.template_used,
+               e.status, e.sent_at, e.follow_up_date,
+               e.created_at, u.name AS sent_by_name
         FROM email_outreach e
         LEFT JOIN users u ON u.id = e.sent_by
         WHERE e.lead_id = :lead_id AND e.status != 'draft'
@@ -378,6 +559,7 @@ def get_lead_emails(
             "sent_from":      r.sent_from,
             "sent_to":        r.sent_to,
             "subject":        r.subject,
+            "body":           r.body,
             "email_type":     r.email_type,
             "template_used":  r.template_used,
             "status":         r.status,
@@ -395,7 +577,7 @@ def get_all_outreach(
     db:   Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
-    """All sent emails — manager view."""
+    """All sent emails — manager overview."""
     rows = db.execute(text("""
         SELECT e.id, e.lead_id, l.name AS lead_name,
                l.area, e.sent_from, e.sent_to,
@@ -406,22 +588,42 @@ def get_all_outreach(
         LEFT JOIN users u ON u.id = e.sent_by
         WHERE e.status = 'sent'
         ORDER BY e.sent_at DESC
-        LIMIT 50
+        LIMIT 100
     """)).fetchall()
 
     return [
         {
-            "id":          r.id,
-            "lead_id":     r.lead_id,
-            "lead_name":   r.lead_name,
-            "area":        r.area,
-            "sent_from":   r.sent_from,
-            "sent_to":     r.sent_to,
-            "subject":     r.subject,
-            "email_type":  r.email_type,
-            "status":      r.status,
-            "sent_by":     r.sent_by_name,
-            "sent_at":     r.sent_at.isoformat() if r.sent_at else None,
+            "id":         r.id,
+            "lead_id":    r.lead_id,
+            "lead_name":  r.lead_name,
+            "area":       r.area,
+            "sent_from":  r.sent_from,
+            "sent_to":    r.sent_to,
+            "subject":    r.subject,
+            "email_type": r.email_type,
+            "status":     r.status,
+            "sent_by":    r.sent_by_name,
+            "sent_at":    r.sent_at.isoformat() if r.sent_at else None,
         }
         for r in rows
     ]
+
+
+@router.get("/email/config")
+def get_email_config(
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Returns current email configuration status — no secrets exposed."""
+    return {
+        "mock_mode":       MOCK_MODE,
+        "smtp_configured": not MOCK_MODE,
+        "smtp_host":       SMTP_HOST or "not set",
+        "smtp_user":       SMTP_USER or "not set",
+        "from_name":       SMTP_FROM_NAME,
+        "message": (
+            "Running in mock mode — emails logged but not sent. "
+            "Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env to enable."
+        ) if MOCK_MODE else (
+            f"SMTP configured — sending from {SMTP_USER}"
+        ),
+    }
