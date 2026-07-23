@@ -209,7 +209,10 @@ def get_leads(
     rows = db.execute(text(f"""
         SELECT id, name, owner_name, phone, email, website,
                area, lead_type, source, score, status,
-               notes, assigned_to, last_contacted, created_at, updated_at
+               notes, assigned_to, ai_score, ai_score_reason,
+               last_contacted, email_sent_at, follow_up_date,
+               contact_attempts, lead_quality,
+               created_at, updated_at
         FROM leads WHERE {where}
         ORDER BY score DESC, created_at DESC
         LIMIT :limit OFFSET :offset
@@ -220,14 +223,28 @@ def get_leads(
         "pages": -(-total // limit),
         "data": [
             {
-                "id": r.id, "name": r.name, "owner_name": r.owner_name,
-                "phone": r.phone, "email": r.email, "website": r.website,
-                "area": r.area, "lead_type": r.lead_type, "source": r.source,
-                "score": r.score, "status": r.status, "notes": r.notes,
-                "assigned_to": r.assigned_to,
-                "last_contacted": r.last_contacted.isoformat() if r.last_contacted else None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "id":               r.id,
+                "name":             r.name,
+                "owner_name":       r.owner_name,
+                "phone":            r.phone,
+                "email":            r.email,
+                "website":          r.website,
+                "area":             r.area,
+                "lead_type":        r.lead_type,
+                "source":           r.source,
+                "score":            r.score,
+                "status":           r.status,
+                "notes":            r.notes,
+                "assigned_to":      r.assigned_to,
+                "ai_score":         r.ai_score,
+                "ai_score_reason":  r.ai_score_reason,
+                "lead_quality":     r.lead_quality,
+                "last_contacted":   r.last_contacted.isoformat() if r.last_contacted else None,
+                "email_sent_at":    r.email_sent_at.isoformat() if r.email_sent_at else None,
+                "follow_up_date":   r.follow_up_date.isoformat() if r.follow_up_date else None,
+                "contact_attempts": r.contact_attempts or 0,
+                "created_at":       r.created_at.isoformat() if r.created_at else None,
+                "updated_at":       r.updated_at.isoformat() if r.updated_at else None,
             }
             for r in rows
         ]
