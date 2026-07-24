@@ -187,48 +187,53 @@ async def create_note(
     )
 
     # Save note with AI score to lead_notes table
-    note_row = db.execute(text("""
-        INSERT INTO lead_notes (
-            lead_id, note, created_by,
-            ai_score, ai_score_reason,
-            follow_up_days, signals, created_at
-        ) VALUES (
-            :lead_id, :note, :created_by,
-            :ai_score, :ai_score_reason,
-            :follow_up_days, :signals, NOW()
-        )
-        RETURNING id, created_at
-    """), {
-        "lead_id":         lead_id,
-        "note":            body.note,
-        "created_by":      created_by,
-        "ai_score":        ai_result.get("score"),
-        "ai_score_reason": ai_result.get("reason"),
-        "follow_up_days":  follow_up_days,
-        "signals":         ai_result.get("signals", []),
-    }).fetchone()
-    db.commit()
+    try:
+        
+        note_row = db.execute(text("""
+            INSERT INTO lead_notes (
+                lead_id, note, created_by,
+                ai_score, ai_score_reason,
+                follow_up_days, signals, created_at
+            ) VALUES (
+                :lead_id, :note, :created_by,
+                :ai_score, :ai_score_reason,
+                :follow_up_days, :signals, NOW()
+            )
+            RETURNING id, created_at
+        """), {
+            "lead_id":         lead_id,
+            "note":            body.note,
+            "created_by":      created_by,
+            "ai_score":        ai_result.get("score"),
+            "ai_score_reason": ai_result.get("reason"),
+            "follow_up_days":  follow_up_days,
+            "signals":         ai_result.get("signals", []),
+        }).fetchone()
+        db.commit()
 
-    # Update lead's AI score + contact tracking
-    db.execute(text("""
-        UPDATE leads SET
-            ai_score         = :ai_score,
-            ai_score_label   = :ai_score_label,
-            ai_score_reason  = :ai_score_reason,
-            ai_scored_at     = NOW(),
-            follow_up_date   = :follow_up_date,
-            last_contacted   = NOW(),
-            contact_attempts = COALESCE(contact_attempts, 0) + 1,
-            updated_at       = NOW()
-        WHERE id = :id
-    """), {
-        "id":              lead_id,
-        "ai_score":        ai_result.get("score"),
-        "ai_score_label":  SCORE_DISPLAY.get(ai_result.get("score", ""), ""),
-        "ai_score_reason": ai_result.get("reason"),
-        "follow_up_date":  follow_up_date,
-    })
-    db.commit()
+        # Update lead's AI score + contact tracking
+        db.execute(text("""
+            UPDATE leads SET
+                ai_score         = :ai_score,
+                ai_score_reason  = :ai_score_reason,
+                ai_scored_at     = NOW(),
+                follow_up_date   = :follow_up_date,
+                last_contacted   = NOW(),
+                contact_attempts = COALESCE(contact_attempts, 0) + 1,
+                updated_at       = NOW()
+            WHERE id = :id
+        """), {
+            "id":              lead_id,
+            "ai_score":        ai_result.get("score"),
+            "ai_score_reason": ai_result.get("reason"),
+            "follow_up_date":  follow_up_date,
+        })
+    
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise    
 
     logger.info(
         f"Lead {lead_id} scored: {ai_result.get('score')} "

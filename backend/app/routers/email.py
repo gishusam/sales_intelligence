@@ -1,15 +1,6 @@
 """
 email.py — Email outreach + follow-up system with attachment support
 
-Configure via .env:
-    SMTP_HOST     = smtp.gmail.com
-    SMTP_PORT     = 587
-    SMTP_USER     = nyumbazetu.test@gmail.com
-    SMTP_PASSWORD = your-16-char-app-password
-    SMTP_FROM_NAME = Nyumba Zetu Sales
-
-Swap to production credentials when ready — no code changes needed.
-
 Endpoints:
     POST /api/leads/{id}/email/preview        — generate preview
     POST /api/leads/{id}/email/send           — send with optional attachment
