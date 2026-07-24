@@ -731,6 +731,152 @@ def parse_excel(content: bytes) -> tuple[list[dict], list[str]]:
 
 
 
+
+
+@router.get("/notifications")
+def get_notifications(
+    db:   Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Returns today's actionable alerts for the notification bell.
+    Includes: follow-ups due, overdue follow-ups, leads assigned to user.
+    """
+    from datetime import date
+
+    today = date.today()
+
+    # Follow-ups due today (all reps see all)
+    followups_today = db.execute(text("""
+        SELECT id, name, area, lead_type, follow_up_date,
+               assigned_to, ai_score
+        FROM leads
+        WHERE follow_up_date = :today
+          AND status NOT IN ('won', 'lost')
+        ORDER BY ai_score, name
+    """), {"today": today}).fetchall()
+
+    # Overdue follow-ups
+    overdue = db.execute(text("""
+        SELECT id, name, area, follow_up_date,
+               assigned_to, ai_score,
+               (:today - follow_up_date) AS days_overdue
+        FROM leads
+        WHERE follow_up_date < :today
+          AND status NOT IN ('won', 'lost')
+          AND follow_up_date IS NOT NULL
+        ORDER BY follow_up_date ASC
+        LIMIT 10
+    """), {"today": today}).fetchall()
+
+    # My leads with no activity in 7+ days
+    stale_my_leads = db.execute(text("""
+        SELECT id, name, area, last_contacted,
+               (:today - last_contacted::date) AS days_since_contact
+        FROM leads
+        WHERE assigned_to = :name
+          AND last_contacted IS NOT NULL
+          AND last_contacted < NOW() - INTERVAL '7 days'
+          AND status NOT IN ('won', 'lost')
+        ORDER BY last_contacted ASC
+        LIMIT 5
+    """), {"today": today, "name": user.name}).fetchall()
+
+    # New unassigned leads (added in last 24 hours)
+    new_leads = db.execute(text("""
+        SELECT COUNT(*) as count
+        FROM leads
+        WHERE assigned_to IS NULL
+          AND created_at >= NOW() - INTERVAL '24 hours'
+    """)).scalar()
+
+    notifications = []
+
+    # Overdue first — most urgent
+    if overdue:
+        notifications.append({
+            "type":     "overdue",
+            "priority": "high",
+            "title":    f"{len(overdue)} overdue follow-up(s)",
+            "message":  f"Oldest: {overdue[0].name} — {overdue[0].days_overdue} days overdue",
+            "count":    len(overdue),
+            "leads":    [
+                {
+                    "id":           r.id,
+                    "name":         r.name,
+                    "area":         r.area,
+                    "follow_up_date": r.follow_up_date.isoformat(),
+                    "days_overdue": r.days_overdue,
+                    "ai_score":     r.ai_score,
+                }
+                for r in overdue
+            ],
+        })
+
+    # Due today
+    if followups_today:
+        notifications.append({
+            "type":     "due_today",
+            "priority": "high",
+            "title":    f"{len(followups_today)} follow-up(s) due today",
+            "message":  f"Includes: {', '.join(r.name for r in followups_today[:2])}",
+            "count":    len(followups_today),
+            "leads":    [
+                {
+                    "id":       r.id,
+                    "name":     r.name,
+                    "area":     r.area,
+                    "ai_score": r.ai_score,
+                    "assigned_to": r.assigned_to,
+                }
+                for r in followups_today
+            ],
+        })
+
+    # Stale my leads
+    if stale_my_leads:
+        notifications.append({
+            "type":     "stale",
+            "priority": "medium",
+            "title":    f"{len(stale_my_leads)} of your leads need attention",
+            "message":  "No contact in 7+ days",
+            "count":    len(stale_my_leads),
+            "leads":    [
+                {
+                    "id":                r.id,
+                    "name":              r.name,
+                    "area":              r.area,
+                    "days_since_contact": r.days_since_contact,
+                }
+                for r in stale_my_leads
+            ],
+        })
+
+    # New unassigned
+    if new_leads > 0:
+        notifications.append({
+            "type":     "new_leads",
+            "priority": "low",
+            "title":    f"{new_leads} new unassigned lead(s)",
+            "message":  "Added in the last 24 hours",
+            "count":    new_leads,
+            "leads":    [],
+        })
+
+    total_count = (
+        len(overdue) +
+        len(followups_today) +
+        len(stale_my_leads) +
+        (new_leads or 0)
+    )
+
+    return {
+        "total":         total_count,
+        "notifications": notifications,
+        "has_urgent":    len(overdue) > 0 or len(followups_today) > 0,
+    }
+
+
 @router.get("/leads/outreach")
 def get_outreach_leads(
     lead_type:  str = Query(None),
