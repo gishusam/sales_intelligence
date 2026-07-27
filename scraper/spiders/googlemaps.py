@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 from playwright.async_api import async_playwright
+from spiders.database import run_transaction
 from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
@@ -70,7 +71,7 @@ def ensure_table(conn):
     logger.info("google_places_leads table ready")
 
 
-def save_results(conn, results):
+def save_results(results):
     if not results:
         return 0
     rows = [(
@@ -81,22 +82,28 @@ def save_results(conn, results):
         datetime.now(timezone.utc),
     ) for r in results]
 
-    with conn.cursor() as cur:
-        execute_values(cur, """
-            INSERT INTO google_places_leads
-              (business_name, area, address, phone, website,
-               rating, review_count, category, search_query,
-               maps_url, scraped_at)
-            VALUES %s
-            ON CONFLICT (business_name, area) DO UPDATE SET
-              phone        = EXCLUDED.phone,
-              website      = EXCLUDED.website,
-              rating       = EXCLUDED.rating,
-              review_count = EXCLUDED.review_count,
-              scraped_at   = EXCLUDED.scraped_at
-        """, rows)
-        conn.commit()
-    return len(rows)
+    def persist(connection):
+        with connection.cursor() as cur:
+            execute_values(cur, """
+                INSERT INTO google_places_leads
+                  (business_name, area, address, phone, website,
+                   rating, review_count, category, search_query,
+                   maps_url, scraped_at)
+                VALUES %s
+                ON CONFLICT (business_name, area) DO UPDATE SET
+                  phone        = EXCLUDED.phone,
+                  website      = EXCLUDED.website,
+                  rating       = EXCLUDED.rating,
+                  review_count = EXCLUDED.review_count,
+                  scraped_at   = EXCLUDED.scraped_at
+            """, rows)
+        return len(rows)
+
+    return run_transaction(
+        persist,
+        fallback_config=DB_CONFIG,
+        operation_name="Saving agency staging rows",
+    )
 
 
 async def get_page_diagnostic(page):
@@ -273,8 +280,11 @@ async def scrape_area(page, area):
 
 
 async def run(areas, headless=True):
-    conn = get_db()
-    ensure_table(conn)
+    run_transaction(
+        ensure_table,
+        fallback_config=DB_CONFIG,
+        operation_name="Preparing agency staging table",
+    )
     total = 0
 
     async with async_playwright() as pw:
@@ -299,14 +309,13 @@ async def run(areas, headless=True):
         for area in areas:
             logger.info(f"\n── Area: {area} ──────────────────────────")
             results = await scrape_area(page, area)
-            saved = save_results(conn, results)
+            saved = save_results(results)
             total += saved
             logger.info(f"Area '{area}': {len(results)} found → {saved} saved")
             await asyncio.sleep(2)
 
         await browser.close()
 
-    conn.close()
     logger.info(f"\nDone — {total} total records saved to google_places_leads")
     return total
 

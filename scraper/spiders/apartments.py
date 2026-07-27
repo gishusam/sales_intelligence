@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 from playwright.async_api import async_playwright
+from spiders.database import run_transaction
 from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
@@ -395,7 +396,7 @@ async def enrich_building(page, building: dict) -> dict:
 
 # ── Database ──────────────────────────────────────────────────────
 
-def save_buildings(conn, buildings: list[dict]) -> int:
+def save_buildings(buildings: list[dict]) -> int:
     if not buildings:
         return 0
 
@@ -423,37 +424,46 @@ def save_buildings(conn, buildings: list[dict]) -> int:
         datetime.now(timezone.utc),
     ) for b in buildings]
 
-    with conn.cursor() as cur:
-        execute_values(cur, """
-            INSERT INTO apartment_staging (
-                building_name, normalized_name,
-                search_area, search_query,
-                category, rating, review_count,
-                maps_url, latitude, longitude,
-                lead_score, score_reasons,
-                contact_phone, contact_email, contact_website,
-                management_company, social_media,
-                enrichment_status, confidence,
-                enriched_at, scraped_at
-            ) VALUES %s
-            ON CONFLICT (normalized_name, search_area) DO UPDATE SET
-                rating             = EXCLUDED.rating,
-                review_count       = EXCLUDED.review_count,
-                lead_score         = EXCLUDED.lead_score,
-                contact_phone      = COALESCE(EXCLUDED.contact_phone,
-                                              apartment_staging.contact_phone),
-                contact_email      = COALESCE(EXCLUDED.contact_email,
-                                              apartment_staging.contact_email),
-                contact_website    = COALESCE(EXCLUDED.contact_website,
-                                              apartment_staging.contact_website),
-                management_company = COALESCE(EXCLUDED.management_company,
-                                              apartment_staging.management_company),
-                enrichment_status  = EXCLUDED.enrichment_status,
-                confidence         = EXCLUDED.confidence,
-                enriched_at        = EXCLUDED.enriched_at
-        """, rows)
-        conn.commit()
-    return len(rows)
+    def persist(connection):
+        with connection.cursor() as cur:
+            execute_values(cur, """
+                INSERT INTO apartment_staging (
+                    building_name, normalized_name,
+                    search_area, search_query,
+                    category, rating, review_count,
+                    maps_url, latitude, longitude,
+                    lead_score, score_reasons,
+                    contact_phone, contact_email, contact_website,
+                    management_company, social_media,
+                    enrichment_status, confidence,
+                    enriched_at, scraped_at
+                ) VALUES %s
+                ON CONFLICT (normalized_name, search_area) DO UPDATE SET
+                    rating             = EXCLUDED.rating,
+                    review_count       = EXCLUDED.review_count,
+                    lead_score         = EXCLUDED.lead_score,
+                    contact_phone      = COALESCE(EXCLUDED.contact_phone,
+                                                  apartment_staging.contact_phone),
+                    contact_email      = COALESCE(EXCLUDED.contact_email,
+                                                  apartment_staging.contact_email),
+                    contact_website    = COALESCE(EXCLUDED.contact_website,
+                                                  apartment_staging.contact_website),
+                    management_company = COALESCE(
+                        EXCLUDED.management_company,
+                        apartment_staging.management_company
+                    ),
+                    enrichment_status  = EXCLUDED.enrichment_status,
+                    confidence         = EXCLUDED.confidence,
+                    enriched_at        = EXCLUDED.enriched_at,
+                    scraped_at         = EXCLUDED.scraped_at
+            """, rows)
+        return len(rows)
+
+    return run_transaction(
+        persist,
+        fallback_config=DB_CONFIG,
+        operation_name="Saving apartment staging rows",
+    )
 
 
 # ── Re-enrich existing records missing phone ──────────────────────
@@ -557,7 +567,6 @@ async def reenrich_missing(areas: list[str], limit: int, headless: bool):
 # ── Main ──────────────────────────────────────────────────────────
 
 async def run(areas: list[str], enrich_top: int, headless: bool):
-    conn = psycopg2.connect(**DB_CONFIG)
     grand_total = 0
 
     async with async_playwright() as pw:
@@ -601,7 +610,7 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
                 await enrich_building(page, b)
                 await asyncio.sleep(2)
 
-            saved = save_buildings(conn, buildings)
+            saved = save_buildings(buildings)
             grand_total += saved
             logger.info(f"  Saved {saved} buildings for {area}")
 
@@ -649,8 +658,6 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
             print(f"{ns:<32} {(area or '—'):<14} {score:>5} "
                   f"{(phone or '—'):<15} {conf or '—'}")
     print(f"\n{'='*65}\n")
-
-    conn.close()
 
 
 def main():
