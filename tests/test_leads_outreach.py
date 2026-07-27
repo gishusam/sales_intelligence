@@ -112,3 +112,22 @@ def test_by_area_filters_on_lead_type_when_supplied():
     assert response == [{"area": "Kilimani", "count": 12}]
     assert "lead_type = :lead_type" in db.calls[0][0]
     assert db.calls[0][1] == {"lead_type": "agency"}
+
+
+def test_by_area_ignores_malformed_legacy_filter():
+    from app.routers import leads
+
+    class FakeDb:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params):
+            self.calls.append((str(statement), params))
+            return Result(rows=[SimpleNamespace(area="Kilimani", count=12)])
+
+    db = FakeDb()
+    response = leads.get_by_area(lead_type="[object Object]", db=db)
+
+    assert response == [{"area": "Kilimani", "count": 12}]
+    assert "lead_type = :lead_type" not in db.calls[0][0]
+    assert db.calls[0][1] == {}
