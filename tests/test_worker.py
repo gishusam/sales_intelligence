@@ -60,6 +60,53 @@ def test_worker_updates_run_status_directly_in_postgres(monkeypatch):
     assert calls[-1] == ("commit", None)
 
 
+def test_worker_retries_transient_database_failure_when_updating_run(monkeypatch):
+    import github_agent
+
+    attempts = []
+    sleeps = []
+
+    class Cursor:
+        def execute(self, _sql, _params):
+            return None
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    def connect(_url):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise github_agent.psycopg2.OperationalError(
+                "max clients reached"
+            )
+        return Connection()
+
+    monkeypatch.setattr(github_agent.psycopg2, "connect", connect)
+    monkeypatch.setattr(
+        github_agent.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    github_agent.update_run(7, {
+        "status": "failed",
+        "error": "scrape failed",
+    })
+
+    assert len(attempts) == 3
+    assert sleeps == [1.0, 2.0]
+
+
 def test_developer_worker_does_not_pass_unsupported_areas_flag():
     import github_agent
 
