@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 from playwright.async_api import async_playwright
+from spiders.database import run_transaction
 from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
@@ -232,27 +233,34 @@ def get_pending(conn, limit: int):
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def save_enrichment(conn, dev_id: int, data: dict):
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE developer_staging SET
-                contact_phone     = %s,
-                contact_email     = %s,
-                contact_website   = %s,
-                address           = %s,
-                rating            = %s,
-                review_count      = %s,
-                maps_url          = %s,
-                enrichment_status = %s,
-                enriched_at       = %s
-            WHERE id = %s
-        """, (
-            data.get("phone"), data.get("email"), data.get("website"),
-            data.get("address"), data.get("rating"), data.get("review_count"),
-            data.get("maps_url"), data.get("status", "done"),
-            datetime.now(timezone.utc), dev_id
-        ))
-        conn.commit()
+def save_enrichment(dev_id: int, data: dict):
+    def persist(connection):
+        with connection.cursor() as cur:
+            cur.execute("""
+                UPDATE developer_staging SET
+                    contact_phone     = %s,
+                    contact_email     = %s,
+                    contact_website   = %s,
+                    address           = %s,
+                    rating            = %s,
+                    review_count      = %s,
+                    maps_url          = %s,
+                    enrichment_status = %s,
+                    enriched_at       = %s
+                WHERE id = %s
+            """, (
+                data.get("phone"), data.get("email"), data.get("website"),
+                data.get("address"), data.get("rating"),
+                data.get("review_count"), data.get("maps_url"),
+                data.get("status", "done"),
+                datetime.now(timezone.utc), dev_id
+            ))
+
+    run_transaction(
+        persist,
+        fallback_config=DB_CONFIG,
+        operation_name=f"Saving developer enrichment {dev_id}",
+    )
 
 
 async def enrich_developer(page, name: str) -> dict:
@@ -355,13 +363,18 @@ async def enrich_developer(page, name: str) -> dict:
 
 
 async def run_enrichment(limit: int, headless: bool):
-    conn = psycopg2.connect(**DB_CONFIG)
-    ensure_table(conn)
-    pending = get_pending(conn, limit)
+    def prepare(connection):
+        ensure_table(connection)
+        return get_pending(connection, limit)
+
+    pending = run_transaction(
+        prepare,
+        fallback_config=DB_CONFIG,
+        operation_name="Loading pending developers",
+    )
 
     if not pending:
         logger.info("No pending developers to enrich")
-        conn.close()
         return
 
     logger.info(f"Enriching {len(pending)} developers...")
@@ -385,31 +398,36 @@ async def run_enrichment(limit: int, headless: bool):
         for i, dev in enumerate(pending, 1):
             logger.info(f"[{i}/{len(pending)}] [{dev['membership_tier']}] {dev['developer_name']}")
             result = await enrich_developer(page, dev["developer_name"])
-            save_enrichment(conn, dev["id"], result)
+            save_enrichment(dev["id"], result)
             await asyncio.sleep(2)
 
         await browser.close()
 
-    # Summary
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT enrichment_status, COUNT(*),
-                   COUNT(contact_phone), COUNT(contact_website)
-            FROM developer_staging GROUP BY enrichment_status
-        """)
-        stats = cur.fetchall()
+    def load_summary(connection):
+        with connection.cursor() as cur:
+            cur.execute("""
+                SELECT enrichment_status, COUNT(*),
+                       COUNT(contact_phone), COUNT(contact_website)
+                FROM developer_staging GROUP BY enrichment_status
+            """)
+            stats = cur.fetchall()
 
-        cur.execute("""
-            SELECT developer_name, membership_tier, contact_phone,
-                   contact_website, rating
-            FROM developer_staging
-            WHERE enrichment_status = 'done'
-            ORDER BY tier_score DESC, rating DESC NULLS LAST
-            LIMIT 15
-        """)
-        top = cur.fetchall()
+            cur.execute("""
+                SELECT developer_name, membership_tier, contact_phone,
+                       contact_website, rating
+                FROM developer_staging
+                WHERE enrichment_status = 'done'
+                ORDER BY tier_score DESC, rating DESC NULLS LAST
+                LIMIT 15
+            """)
+            top = cur.fetchall()
+        return stats, top
 
-    conn.close()
+    stats, top = run_transaction(
+        load_summary,
+        fallback_config=DB_CONFIG,
+        operation_name="Loading developer enrichment summary",
+    )
 
     print(f"\n{'='*65}")
     print(f"ENRICHMENT COMPLETE")
