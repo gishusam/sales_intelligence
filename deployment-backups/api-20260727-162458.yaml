@@ -1,0 +1,115 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
+    run.googleapis.com/maxScale: '1'
+    run.googleapis.com/urls: '["https://sales-intelligence-api-693887939589.europe-west1.run.app","https://sales-intelligence-api-2c4dpa66cq-ew.a.run.app"]'
+  labels:
+    cloud.googleapis.com/location: europe-west1
+    commit-sha: ebb19f6572c987ec3549a99af9c6c6df187343e4
+    gcb-build-id: 4c3de6f4-66bf-4f17-aea1-225a63455364
+    gcb-trigger-id: 97aee097-c7b2-4c64-9de9-363156de9aef
+    gcb-trigger-region: global
+    managed-by: gcp-cloud-build-deploy-cloud-run
+  name: sales-intelligence-api
+  namespace: '693887939589'
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: '1'
+        run.googleapis.com/client-name: gcloud
+        run.googleapis.com/client-version: 572.0.0
+        run.googleapis.com/startup-cpu-boost: 'true'
+      labels:
+        client.knative.dev/nonce: iqjtbbawbc
+        commit-sha: ebb19f6572c987ec3549a99af9c6c6df187343e4
+        gcb-build-id: 4c3de6f4-66bf-4f17-aea1-225a63455364
+        gcb-trigger-id: 97aee097-c7b2-4c64-9de9-363156de9aef
+        gcb-trigger-region: global
+        managed-by: gcp-cloud-build-deploy-cloud-run
+        run.googleapis.com/startupProbeType: Default
+    spec:
+      containerConcurrency: 20
+      containers:
+      - env:
+        - name: POSTGRES_HOST
+          value: aws-0-eu-west-1.pooler.supabase.com
+        - name: POSTGRES_PORT
+          value: '6543'
+        - name: POSTGRES_DB
+          value: postgres
+        - name: POSTGRES_USER
+          value: postgres.agwjduiekszcreehnhyz
+        - name: PGSSLMODE
+          value: require
+        - name: DEBUG
+          value: 'false'
+        - name: CLOUD_RUN_PROJECT
+          value: sales-intelligens
+        - name: CLOUD_RUN_REGION
+          value: europe-west1
+        - name: SCRAPER_CLOUD_RUN_JOB
+          value: sales-scraper
+        - name: SMTP_PORT
+          value: '587'
+        - name: SMTP_HOST
+          value: smtp.gmail.com
+        - name: SMTP_USER
+          value: sammiegichu@gmail.com
+        - name: SMTP_PASSWORD
+          value: vpyntzxctkkfarmu
+        - name: SMTP_FROM_NAME
+          value: Nyumba Zetu Sales
+        - name: 'GROQ_API_KEY '
+          value: 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
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-db-transaction-url
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-db-password
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-app-secret
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: latest
+              name: sales-jwt-secret
+        - name: GROQ_API_KEY
+          value: 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
+        - name: GROQ_MODEL
+          value: openai/gpt-oss-20b
+        image: europe-west1-docker.pkg.dev/sales-intelligens/cloud-run-source-deploy/sales_intelligence/sales-intelligence-api:f17768f-20260727-161636
+        name: sales-intelligence-api-1
+        ports:
+        - containerPort: 8000
+          name: http1
+        resources:
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 1
+          periodSeconds: 240
+          tcpSocket:
+            port: 8000
+          timeoutSeconds: 240
+      serviceAccountName: sales-api@sales-intelligens.iam.gserviceaccount.com
+      timeoutSeconds: 60
+  traffic:
+  - latestRevision: true
+    percent: 100
+  - revisionName: sales-intelligence-api-00021-fid
+    tag: db-pool-candidate
+  - revisionName: sales-intelligence-api-00022-xux
+    tag: pool-prod

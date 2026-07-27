@@ -1,0 +1,11 @@
+project=sales-intelligens
+region=europe-west1
+service=sales-intelligence-api
+previous_revision=sales-intelligence-api-00024-rbj
+new_revision=sales-intelligence-api-00026-lkr
+new_image=europe-west1-docker.pkg.dev/sales-intelligens/cloud-run-source-deploy/sales_intelligence/sales-intelligence-api:e5435a8-20260727-162458
+service_url=https://sales-intelligence-api-2c4dpa66cq-ew.a.run.app
+health=passed
+openapi_path=/api/leads/outreach
+openapi_contract=passed
+rollback_command=gcloud run services update-traffic sales-intelligence-api --project sales-intelligens --region europe-west1 --to-revisions sales-intelligence-api-00024-rbj=100
