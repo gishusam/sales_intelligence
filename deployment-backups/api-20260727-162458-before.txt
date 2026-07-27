@@ -1,0 +1,8 @@
+project=sales-intelligens
+region=europe-west1
+service=sales-intelligence-api
+previous_revision=sales-intelligence-api-00024-rbj
+previous_image=europe-west1-docker.pkg.dev/sales-intelligens/cloud-run-source-deploy/sales_intelligence/sales-intelligence-api:f17768f-20260727-161636
+service_url=https://sales-intelligence-api-2c4dpa66cq-ew.a.run.app
+build_context=backend
+dockerfile=backend\Dockerfile

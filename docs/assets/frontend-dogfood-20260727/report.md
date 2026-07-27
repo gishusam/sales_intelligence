@@ -160,6 +160,19 @@ Developers, Landlords, My Leads, Analytics, Reports, and Settings against the
 local fixed stack. There were zero console errors, zero failed requests, zero
 HTTP responses at or above 400, and no page remained in an error/loading state.
 
+After Cloud Run revision `sales-intelligence-api-00026-lkr` received 100%
+production traffic, the same ten-route browser pass was repeated against
+`https://nyumba-lead-hub.vercel.app`. The deployed (older) frontend's malformed
+`[object Object]` dashboard filter was ignored by the backward-compatible API;
+all eight outreach calls returned `200`. The live pass again recorded zero
+console errors, failed requests, HTTP 4xx/5xx responses, or stuck pages.
+
+![Live production dashboard](screenshots/production-fixed-dashboard.png)
+
+![Live production Apartments](screenshots/production-fixed-apartments.png)
+
+![Live production run history](screenshots/production-recovered-run-history.png)
+
 The normal Vite dev server produced a React hydration warning from Lovable's
 development-only source tagger because its `data-tsd-source` line metadata
 differs between server and client transforms. Production does not include the
