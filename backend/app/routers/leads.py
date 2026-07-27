@@ -10,7 +10,7 @@ import csv
 import re
 import openpyxl
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel
@@ -97,12 +97,18 @@ def get_funnel(db: Session = Depends(get_db)):
 # ── 4. By area ─────────────────────────────────────────────────────
 
 @router.get("/dashboard/by-area")
-def get_by_area(db: Session = Depends(get_db)):
-    rows = db.execute(text("""
+def get_by_area(
+    lead_type: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    type_filter = "AND lead_type = :lead_type" if lead_type else ""
+    params = {"lead_type": lead_type} if lead_type else {}
+    rows = db.execute(text(f"""
         SELECT area, COUNT(*) AS count FROM leads
         WHERE area IS NOT NULL
+        {type_filter}
         GROUP BY area ORDER BY count DESC LIMIT 12
-    """)).fetchall()
+    """), params).fetchall()
     return [{"area": r.area, "count": r.count} for r in rows]
 
 
@@ -168,6 +174,130 @@ def get_leads_summary(db: Session = Depends(get_db)):
 
 
 # ── 6. Lead list ───────────────────────────────────────────────────
+
+@router.get("/leads/outreach")
+def get_outreach_leads(
+    lead_type: str = Query(...),
+    filter_by: Literal["all", "emailed", "not_emailed"] = Query("all"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Return lead rows enriched with their latest successfully sent email."""
+    counts = db.execute(text("""
+        SELECT
+            COUNT(*) AS all,
+            COUNT(*) FILTER (
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM email_outreach e
+                    WHERE e.lead_id = l.id AND e.status = 'sent'
+                )
+            ) AS emailed,
+            COUNT(*) FILTER (
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM email_outreach e
+                    WHERE e.lead_id = l.id AND e.status = 'sent'
+                )
+            ) AS not_emailed
+        FROM leads l
+        WHERE l.lead_type = :lead_type
+    """), {"lead_type": lead_type}).fetchone()
+
+    count_values = {
+        "all": counts.all,
+        "emailed": counts.emailed,
+        "not_emailed": counts.not_emailed,
+    }
+    total = count_values[filter_by]
+    offset = (page - 1) * limit
+    email_filter = {
+        "all": "",
+        "emailed": "AND latest_email.id IS NOT NULL",
+        "not_emailed": "AND latest_email.id IS NULL",
+    }[filter_by]
+
+    rows = db.execute(text(f"""
+        SELECT
+            l.id, l.name, l.owner_name, l.phone, l.email, l.website,
+            l.area, l.lead_type, l.source, l.score, l.status, l.notes,
+            l.assigned_to, l.last_contacted, l.contact_attempts,
+            l.follow_up_date, l.ai_score, l.ai_score_reason,
+            l.contact_person, l.contact_person_role,
+            l.created_at, l.updated_at,
+            latest_email.email_type AS last_email_type,
+            COALESCE(
+                latest_email.sent_at,
+                latest_email.created_at
+            ) AS last_email_at,
+            sender.name AS last_email_sent_by
+        FROM leads l
+        LEFT JOIN LATERAL (
+            SELECT e.id, e.email_type, e.sent_at, e.created_at, e.sent_by
+            FROM email_outreach e
+            WHERE e.lead_id = l.id AND e.status = 'sent'
+            ORDER BY COALESCE(e.sent_at, e.created_at) DESC, e.id DESC
+            LIMIT 1
+        ) latest_email ON TRUE
+        LEFT JOIN users sender ON sender.id = latest_email.sent_by
+        WHERE l.lead_type = :lead_type
+        {email_filter}
+        ORDER BY l.score DESC NULLS LAST, l.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """), {
+        "lead_type": lead_type,
+        "limit": limit,
+        "offset": offset,
+    }).fetchall()
+
+    return {
+        "counts": count_values,
+        "total": total,
+        "page": page,
+        "pages": -(-total // limit),
+        "limit": limit,
+        "data": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "owner_name": r.owner_name,
+                "phone": r.phone,
+                "email": r.email,
+                "website": r.website,
+                "area": r.area,
+                "lead_type": r.lead_type,
+                "source": r.source,
+                "score": r.score,
+                "status": r.status,
+                "notes": r.notes,
+                "assigned_to": r.assigned_to,
+                "last_contacted": (
+                    r.last_contacted.isoformat() if r.last_contacted else None
+                ),
+                "contact_attempts": r.contact_attempts or 0,
+                "follow_up_date": (
+                    r.follow_up_date.isoformat() if r.follow_up_date else None
+                ),
+                "ai_score": r.ai_score,
+                "ai_score_label": r.ai_score,
+                "ai_score_reason": r.ai_score_reason,
+                "contact_person": r.contact_person,
+                "contact_person_role": r.contact_person_role,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "email_status": (
+                    "emailed" if r.last_email_at else "not_emailed"
+                ),
+                "last_email_type": r.last_email_type,
+                "last_email_at": (
+                    r.last_email_at.isoformat() if r.last_email_at else None
+                ),
+                "last_email_sent_by": r.last_email_sent_by,
+            }
+            for r in rows
+        ],
+    }
 
 @router.get("/leads")
 def get_leads(

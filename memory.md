@@ -4,6 +4,7 @@
 
 - [Cloud deployment](#cloud-deployment)
 - [2026-07-27 - Cloud Run database pooling repair](#2026-07-27---cloud-run-database-pooling-repair)
+- [2026-07-27 - Frontend API repair and snapshot recovery](#2026-07-27---frontend-api-repair-and-snapshot-recovery)
 
 ## Cloud deployment
 
@@ -55,6 +56,16 @@
 - Transaction-pool safety: never call session-level `set_session(readonly=True)` or set `default_transaction_read_only=on` through port `6543`; that state can leak to the next Supavisor client. Use a transaction-scoped `BEGIN READ ONLY` check or the session endpoint for maintenance. The validation-induced idle sessions were identified via `pg_stat_activity`, terminated only while idle, and a write-then-rollback check proved the pool read-write before rollout.
 - Follow-up or explicit non-goals: SMTP, Groq, and other plaintext environment variables are intentionally unchanged pending the user's discussion with Sam. The selected Thika tile has a low-contrast black frontend style; it was observed but not changed in this backend repository.
 
+## 2026-07-27 - Frontend API repair and snapshot recovery
+
+- Production browser QA found three scoped frontend/API contract defects: the four lead-type tables called a missing `/api/leads/outreach` endpoint and remained stuck loading; the dashboard serialized TanStack Query's context object into `lead_type=[object Object]`; and password inputs omitted browser autocomplete metadata.
+- The backend now exposes a static outreach route before `/api/leads`, with lead-type pagination, emailed/not-emailed counts, and latest successful email metadata. `/api/dashboard/by-area` applies its optional `lead_type` filter. Focused route and snapshot-recovery tests pass.
+- The frontend calls `dashboardApi.byArea()` through an explicit zero-argument query function and rejects non-string filter values. Sign-in and password-change fields use the appropriate native autocomplete values. The production build and focused API-client regression test pass.
+- Main-database inspection proved real historical loss: only four July 27 scraper runs remained, versus 32 previously verified runs; lead notes/events were empty and historical lead rows were missing. The recovery used the verified July 17 JSON snapshots, matched existing entities conservatively, backed up all target tables, and inserted only missing data in one transaction.
+- Post-recovery verified counts are 520 leads, 10 notes, 6 events, 36 scraper runs, and 182 run-audit rows. A repeat dry run matched all 428 historical snapshot leads and proposed zero further inserts. The pre-recovery backup is `C:\Users\akioko.INDRALIMITED\SalesIntelligenceMigrationBackups\20260727T154307Z`.
+- Built-in-browser verification against the production-mode local frontend and fixed local API covered every top-level route with real Supabase data. There were zero console errors, failed requests, HTTP responses at or above 400, or stuck loading/error states. Evidence and the issue-by-issue justification are under `docs/assets/frontend-dogfood-20260727/`.
+- The normal Vite development server emits a React hydration warning from Lovable's dev-only source tagger (`data-tsd-source` line metadata differs between SSR and client). Production excludes the tagger and was clean, so no application change was made for this tooling-only warning.
+
 ## Maintenance log
 
 - 2026-07-17: Created this memory file for the initial Cloud Run deployment and Supabase security review.
@@ -65,3 +76,4 @@
 - 2026-07-17: Repaired and live-proved agency/apartment scraping, added exact per-run UI audit persistence and zero-result failure, migrated Railway leads/notes/events losslessly to Supabase, removed embedded legacy credentials, and verified the dashboard API reports all 428 merged leads.
 - 2026-07-17: Reconciled the remaining Railway application tables into Supabase and restored the Railway users and scraper history; this keeps the frontend's historic run view consistent after the Vercel API base URL is switched.
 - 2026-07-27: Shipped and browser-verified the transaction-pooling and worker status-persistence repair; production run `5` proved non-zero user-visible output and run `1` no longer remains stuck.
+- 2026-07-27: Repaired the dashboard/outreach frontend contracts, restored the verified missing historical data additively, and browser-verified every top-level route against the fixed local stack.
