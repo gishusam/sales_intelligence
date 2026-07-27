@@ -101,8 +101,10 @@ def get_by_area(
     lead_type: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    type_filter = "AND lead_type = :lead_type" if lead_type else ""
-    params = {"lead_type": lead_type} if lead_type else {}
+    supported_types = {"apartment", "agency", "developer", "landlord"}
+    valid_lead_type = lead_type if lead_type in supported_types else None
+    type_filter = "AND lead_type = :lead_type" if valid_lead_type else ""
+    params = {"lead_type": valid_lead_type} if valid_lead_type else {}
     rows = db.execute(text(f"""
         SELECT area, COUNT(*) AS count FROM leads
         WHERE area IS NOT NULL
