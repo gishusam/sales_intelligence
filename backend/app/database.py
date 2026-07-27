@@ -4,6 +4,7 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 from app.config import settings
 
 
@@ -17,12 +18,16 @@ def get_database_url() -> str:
     return settings.database_url
 
 
-engine = create_engine(
-    get_database_url(),
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
+def build_engine(database_url: str):
+    """Create an engine without retaining connections beside Supavisor."""
+    return create_engine(
+        database_url,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+    )
+
+
+engine = build_engine(get_database_url())
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

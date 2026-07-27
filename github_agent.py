@@ -65,6 +65,25 @@ def log_subprocess_output(result, stage: str):
         logger.info("%s stderr:\n%s", stage, result.stderr[-12000:])
 
 
+def connect_database(max_attempts: int = 3, base_delay_seconds: float = 1.0):
+    """Connect for status persistence, retrying transient capacity failures."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return psycopg2.connect(get_database_url())
+        except psycopg2.OperationalError:
+            if attempt == max_attempts:
+                raise
+            delay = base_delay_seconds * attempt
+            logger.warning(
+                "Database connection unavailable; retrying in %.1fs "
+                "(attempt %s/%s)",
+                delay,
+                attempt + 1,
+                max_attempts,
+            )
+            time.sleep(delay)
+
+
 def update_run(run_id: int, data: dict):
     """Persist worker status without depending on a public API callback."""
     values = {
@@ -79,7 +98,7 @@ def update_run(run_id: int, data: dict):
         "error": data.get("error"),
         "duration_seconds": data.get("duration_seconds"),
     }
-    conn = psycopg2.connect(get_database_url())
+    conn = connect_database()
     cur = conn.cursor()
     try:
         cur.execute("""
