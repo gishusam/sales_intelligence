@@ -20,20 +20,31 @@ def test_cloud_run_job_request_contains_one_bounded_task():
     from app.routers.scraper import build_cloud_run_job_request
 
     assert build_cloud_run_job_request(
-        42, "apartments", ["Kilimani", "Westlands"]
+        42, "apartments", "kilimani"
     ) == {
         "overrides": {
             "containerOverrides": [{
                 "args": [
                     "--run-id", "42",
                     "--scraper-type", "apartments",
-                    "--areas", "Kilimani,Westlands",
+                    "--area-id", "kilimani",
                 ]
             }],
             "taskCount": 1,
             "timeout": "900s",
         }
     }
+
+
+def test_cloud_run_developer_job_omits_area_argument():
+    from app.routers.scraper import build_cloud_run_job_request
+
+    assert build_cloud_run_job_request(
+        43, "developers", None
+    )["overrides"]["containerOverrides"][0]["args"] == [
+        "--run-id", "43",
+        "--scraper-type", "developers",
+    ]
 
 
 def test_execute_cloud_run_job_uses_metadata_identity():

@@ -16,12 +16,13 @@ from typing import Optional, List
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.auth import get_current_user, CurrentUser
+from app.scraper_catalog import get_location, public_options
 
 router = APIRouter(prefix="/api/scraper", tags=["scraper"])
 logger = logging.getLogger(__name__)
@@ -30,28 +31,30 @@ VALID_SCRAPERS = {"apartments", "agencies", "developers"}
 
 # Map frontend scraper_type to pipeline.py arguments
 SCRAPER_COMMANDS = {
-    "apartments": ["python", "scraper/spiders/apartments.py", "--areas"],
-    "agencies":   ["python", "scraper/spiders/googlemaps.py", "--areas"],
-    "developers": ["python", "scraper/spiders/developers.py", "--enrich", "--areas"],
+    "apartments": ["python", "scraper/spiders/apartments.py", "--area-id"],
+    "agencies":   ["python", "scraper/spiders/googlemaps.py", "--area-id"],
+    "developers": ["python", "scraper/spiders/developers.py", "--enrich"],
 }
 
 
 class RunRequest(BaseModel):
     scraper_type: str
-    areas: List[str]
+    areas: List[str] = Field(default_factory=list)
 
 
 def build_cloud_run_job_request(run_id: int, scraper_type: str,
-                                areas: List[str]) -> dict:
+                                area_id: Optional[str]) -> dict:
     """Build the per-execution overrides for the scraper Cloud Run Job."""
+    args = [
+        "--run-id", str(run_id),
+        "--scraper-type", scraper_type,
+    ]
+    if area_id:
+        args.extend(["--area-id", area_id])
     return {
         "overrides": {
             "containerOverrides": [{
-                "args": [
-                    "--run-id", str(run_id),
-                    "--scraper-type", scraper_type,
-                    "--areas", ",".join(areas),
-                ]
+                "args": args,
             }],
             "taskCount": 1,
             "timeout": "900s",
@@ -99,12 +102,11 @@ def run_scraper_background(run_id: int, scraper_type: str,
     cur = conn.cursor()
 
     try:
-        areas_str = ",".join(areas)
         cmd = SCRAPER_COMMANDS.get(scraper_type, [])
         if not cmd:
             raise ValueError(f"Unknown scraper type: {scraper_type}")
 
-        full_cmd = cmd + [areas_str]
+        full_cmd = cmd + ([areas[0]] if scraper_type != "developers" else [])
         logger.info(f"[run {run_id}] Starting: {' '.join(full_cmd)}")
 
         result = subprocess.run(
@@ -218,6 +220,39 @@ def _extract_int(text: str, pattern: str) -> Optional[int]:
 
 # ── Endpoints ─────────────────────────────────────────────────────
 
+
+def get_scraper_options() -> dict:
+    return public_options()
+
+
+def validate_run_request(scraper_type: str, areas: List[str]) -> Optional[dict]:
+    if scraper_type not in VALID_SCRAPERS:
+        raise HTTPException(
+            400,
+            f"Invalid scraper type. Must be one of: {VALID_SCRAPERS}",
+        )
+    if scraper_type == "developers":
+        if areas:
+            raise HTTPException(400, "Developers does not accept areas")
+        return None
+    if len(areas) != 1:
+        raise HTTPException(
+            400,
+            f"{scraper_type.capitalize()} requires exactly one area",
+        )
+    location = get_location(areas[0])
+    if not location:
+        raise HTTPException(400, f"Unknown area: {areas[0]}")
+    return location
+
+
+@router.get("/options")
+def list_scraper_options(
+    user: CurrentUser = Depends(get_current_user),
+):
+    return get_scraper_options()
+
+
 @router.post("/run")
 def trigger_run(
     body: RunRequest,
@@ -225,10 +260,9 @@ def trigger_run(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Kick off a scrape in the background. Returns immediately."""
-    if body.scraper_type not in VALID_SCRAPERS:
-        raise HTTPException(400, f"Invalid scraper type. Must be one of: {VALID_SCRAPERS}")
-    if not body.areas:
-        raise HTTPException(400, "At least one area is required")
+    location = validate_run_request(body.scraper_type, body.areas)
+    area_id = location["id"] if location else None
+    stored_areas = [location["name"]] if location else []
 
     # Create the run record
     row = db.execute(text("""
@@ -237,7 +271,7 @@ def trigger_run(
         RETURNING id
     """), {
         "scraper_type": body.scraper_type,
-        "areas":        body.areas,
+        "areas":        stored_areas,
         "started_by":   user.name,
     }).fetchone()
     db.commit()
@@ -263,7 +297,7 @@ def trigger_run(
             region,
             job,
             build_cloud_run_job_request(
-                run_id, body.scraper_type, body.areas
+                run_id, body.scraper_type, area_id
             ),
         )
     except Exception as exc:
@@ -283,7 +317,7 @@ def trigger_run(
         "run_id": run_id,
         "status": "running",
         "message": f"{body.scraper_type} scraper started",
-        "areas": body.areas,
+        "areas": stored_areas,
         "operation": operation,
     }
 

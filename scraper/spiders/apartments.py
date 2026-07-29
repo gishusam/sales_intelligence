@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 from playwright.async_api import async_playwright
+from location_catalog import resolve_location, source_search_terms
 from spiders.database import run_transaction
 from spiders.google_consent import dismiss_google_consent
 
@@ -145,13 +146,22 @@ def score_building(name, category, review_count, rating, area) -> tuple:
 
 # ── Discovery ─────────────────────────────────────────────────────
 
-async def discover_area(page, area: str) -> list[dict]:
+def build_queries(location_value: str) -> list[str]:
+    location = resolve_location(location_value)
+    return [
+        f"{term} {location['qualified_term']}"
+        for term in source_search_terms("apartments")
+    ]
+
+
+async def discover_area(page, location_value: str) -> list[dict]:
     """Search Google Maps and extract all building cards for an area."""
+    location = resolve_location(location_value)
+    area = location["name"]
     all_buildings = []
     seen = set()
 
-    for keyword in KEYWORDS:
-        query = f"{keyword} {area} Nairobi"
+    for query in build_queries(location_value):
         url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}?hl=en"
 
         logger.info(f"  Searching: {query}")
@@ -587,7 +597,11 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
         page = await context.new_page()
 
         for area in areas:
-            logger.info(f"\n── Area: {area} ──────────────────────────")
+            location = resolve_location(area)
+            logger.info(
+                "\n── Area: %s ──────────────────────────",
+                location["name"],
+            )
 
             buildings = await discover_area(page, area)
             logger.info(f"  Discovered {len(buildings)} unique buildings")
@@ -612,7 +626,11 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
 
             saved = save_buildings(buildings)
             grand_total += saved
-            logger.info(f"  Saved {saved} buildings for {area}")
+            logger.info(
+                "  Saved %s buildings for %s",
+                saved,
+                location["name"],
+            )
 
         await browser.close()
 
@@ -662,6 +680,7 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--area-id", type=str)
     parser.add_argument("--areas", type=str)
     parser.add_argument("--enrich-top", type=int, default=15)
     parser.add_argument("--visible", action="store_true")
@@ -672,8 +691,13 @@ def main():
     args = parser.parse_args()
 
     areas = (
-        [a.strip() for a in args.areas.split(",")]
-        if args.areas else DEFAULT_AREAS
+        [args.area_id]
+        if args.area_id
+        else (
+            [a.strip() for a in args.areas.split(",")]
+            if args.areas
+            else DEFAULT_AREAS
+        )
     )
 
     if args.reenrich_missing:

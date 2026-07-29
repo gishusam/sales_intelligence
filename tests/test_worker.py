@@ -113,20 +113,20 @@ def test_developer_worker_does_not_pass_unsupported_areas_flag():
     build_command = getattr(github_agent, "build_scraper_command", None)
     assert callable(build_command)
 
-    assert build_command("developers", "Kilimani,Westlands") == [
+    assert build_command("developers", None) == [
         "python", "scraper/spiders/developers.py",
         "--enrich", "--limit", "20",
     ]
 
 
-def test_apartment_worker_passes_requested_areas():
+def test_apartment_worker_passes_one_canonical_area_id():
     import github_agent
 
     assert github_agent.build_scraper_command(
-        "apartments", "Kilimani,Westlands"
+        "apartments", "kilimani"
     ) == [
         "python", "scraper/spiders/apartments.py",
-        "--areas", "Kilimani,Westlands",
+        "--area-id", "kilimani",
     ]
 
 

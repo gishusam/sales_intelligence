@@ -1,0 +1,65 @@
+{
+  "recent_run_days": 7,
+  "history_window": 50,
+  "sources": [
+    {
+      "id": "apartments",
+      "label": "Apartments",
+      "requires_area": true,
+      "max_areas": 1,
+      "search_terms": [
+        "apartments",
+        "residential apartments",
+        "flats for rent",
+        "residences",
+        "apartment complex",
+        "gated community apartments",
+        "towers apartments"
+      ]
+    },
+    {
+      "id": "agencies",
+      "label": "Agencies",
+      "requires_area": true,
+      "max_areas": 1,
+      "search_terms": [
+        "property management companies",
+        "property managers"
+      ]
+    },
+    {
+      "id": "developers",
+      "label": "Developers",
+      "requires_area": false,
+      "max_areas": 0,
+      "search_terms": []
+    }
+  ],
+  "locations": [
+    {"id": "kilimani", "name": "Kilimani", "county": "Nairobi", "qualified_term": "Kilimani, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "kileleshwa", "name": "Kileleshwa", "county": "Nairobi", "qualified_term": "Kileleshwa, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "westlands", "name": "Westlands", "county": "Nairobi", "qualified_term": "Westlands, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "lavington", "name": "Lavington", "county": "Nairobi", "qualified_term": "Lavington, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "south-b", "name": "South B", "county": "Nairobi", "qualified_term": "South B, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "south-c", "name": "South C", "county": "Nairobi", "qualified_term": "South C, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "parklands", "name": "Parklands", "county": "Nairobi", "qualified_term": "Parklands, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "muthaiga", "name": "Muthaiga", "county": "Nairobi", "qualified_term": "Muthaiga, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "karen", "name": "Karen", "county": "Nairobi", "qualified_term": "Karen, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "runda", "name": "Runda", "county": "Nairobi", "qualified_term": "Runda, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "spring-valley", "name": "Spring Valley", "county": "Nairobi", "qualified_term": "Spring Valley, Nairobi County, Kenya", "tier": "premium"},
+    {"id": "kasarani", "name": "Kasarani", "county": "Nairobi", "qualified_term": "Kasarani, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "ngara", "name": "Ngara", "county": "Nairobi", "qualified_term": "Ngara, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "pangani", "name": "Pangani", "county": "Nairobi", "qualified_term": "Pangani, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "embakasi", "name": "Embakasi", "county": "Nairobi", "qualified_term": "Embakasi, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "langata", "name": "Langata", "county": "Nairobi", "qualified_term": "Langata, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "kahawa-west", "name": "Kahawa West", "county": "Nairobi", "qualified_term": "Kahawa West, Nairobi County, Kenya", "tier": "unvetted"},
+    {"id": "donholm", "name": "Donholm", "county": "Nairobi", "qualified_term": "Donholm, Nairobi County, Kenya", "tier": "high_density"},
+    {"id": "upper-hill", "name": "Upper Hill", "county": "Nairobi", "qualified_term": "Upper Hill, Nairobi County, Kenya", "tier": "unvetted"},
+    {"id": "ruaka", "name": "Ruaka", "county": "Kiambu", "qualified_term": "Ruaka, Kiambu County, Kenya", "tier": "high_density"},
+    {"id": "kiambu", "name": "Kiambu", "county": "Kiambu", "qualified_term": "Kiambu, Kiambu County, Kenya", "tier": "unvetted"},
+    {"id": "ruiru", "name": "Ruiru", "county": "Kiambu", "qualified_term": "Ruiru, Kiambu County, Kenya", "tier": "unvetted"},
+    {"id": "thika", "name": "Thika", "county": "Kiambu", "qualified_term": "Thika, Kiambu County, Kenya", "tier": "unvetted"},
+    {"id": "syokimau", "name": "Syokimau", "county": "Machakos", "qualified_term": "Syokimau, Machakos County, Kenya", "tier": "high_density"},
+    {"id": "athi-river", "name": "Athi River", "county": "Machakos", "qualified_term": "Athi River, Machakos County, Kenya", "tier": "unvetted"}
+  ]
+}

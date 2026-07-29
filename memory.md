@@ -5,6 +5,7 @@
 - [Cloud deployment](#cloud-deployment)
 - [2026-07-27 - Cloud Run database pooling repair](#2026-07-27---cloud-run-database-pooling-repair)
 - [2026-07-27 - Frontend API repair and snapshot recovery](#2026-07-27---frontend-api-repair-and-snapshot-recovery)
+- [2026-07-29 - Canonical scraper location contract](#2026-07-29---canonical-scraper-location-contract)
 
 ## Cloud deployment
 
@@ -73,6 +74,17 @@
 - The first fixed-image proof (`43`) confirmed that 68-69 Ruiru buildings could be saved without the SSL disconnect, then exposed an obsolete `conn.close()` left after the refactor; an AST regression test now prevents the main apartment workflow from retaining or referencing a long-lived connection. A second proof (`44`) exited cleanly and exposed that duplicate upserts did not refresh `scraped_at`, causing the UI to count only newly inserted rows. Apartment upserts now refresh `scraped_at`, matching the run audit to the actual processed set.
 - Final production proof run `45` used worker digest `sha256:239e5dc375f0f7905153e8e467dbd160fbdd63597b0f4d6b6289602a899b52ff` and completed on its first attempt in 253 seconds: 65 Ruiru buildings found, 9 with contacts, 20 duplicates, 45 rejected, 65 UI audit rows, no stored error, zero Cloud Logging errors, and container exit code `0`. The Cloud Run Job keeps one retry and a 900-second task timeout; the scraper subprocess remains capped at 720 seconds.
 - User-confirmed disposable local false starts `39` and `40` were deleted from production history after verifying both were failed. They had no dependent audit rows. Their recoverable JSON backup is `C:\Users\akioko.INDRALIMITED\SalesIntelligenceMigrationBackups\20260727T154307Z\deleted-false-starts-39-40.json`.
+
+## 2026-07-29 - Canonical scraper location contract
+
+- `backend/app/scraper_locations.json` is the single phase-1 catalog for the active scraper run path. It contains 25 reviewed Nairobi-metro locations with stable IDs, display names, counties, qualified search terms, and existing premium/high-density/unvetted hints.
+- Authenticated `GET /api/scraper/options` exposes the catalog, source search terms, a seven-day recent-run threshold, and the 50-run UI history-window size. The frontend must consume this response rather than maintain its own area list.
+- Apartments and Agencies require exactly one known canonical location ID. Developers rejects locations. The API stores the canonical display name in `scraper_runs.areas` for compatibility with run history while dispatching the stable ID to the worker.
+- Cloud Run overrides and `github_agent.py` now use singular `--area-id`; the worker forwards that same argument to Apartments or Agencies and omits geography for Developers. The prior comma join/split transport is not used on this active path. Legacy `--areas` parsing remains only as a local/default compatibility fallback.
+- Both location-aware spiders resolve the shared catalog in the worker and build all queries from the catalog's county-qualified term. The blanket `Nairobi` suffix is gone from apartment and agency discovery; unknown legacy local values fall back to `<name>, Kenya` instead of silently claiming Nairobi.
+- The worker image copies the same JSON catalog and sets `SCRAPER_LOCATIONS_PATH`, so API validation and deployed query construction share one versioned artifact.
+- This slice does not backfill historical runs/leads, repair existing duplicate records, remove every inactive legacy orchestrator/list, or add phase-2 national towns. Those are separate migrations or cleanup tasks.
+- Verification: 26 focused catalog, API-dispatch, worker-command, and query-generation tests pass; Python compilation succeeds. The full suite is 51 passed and 3 unrelated failures: two long-standing BuyRentKenya fixture failures plus the current outreach fake-result test, none touching scraper location files.
 
 ## Maintenance log
 

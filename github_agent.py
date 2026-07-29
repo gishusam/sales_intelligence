@@ -35,12 +35,14 @@ SCRAPER_COMMANDS = {
 }
 
 
-def build_scraper_command(scraper_type: str, areas: str):
+def build_scraper_command(scraper_type: str, area_id: str | None):
     command = SCRAPER_COMMANDS.get(scraper_type)
     if command is None:
         return None
     if scraper_type in {"apartments", "agencies"}:
-        return [*command, "--areas", areas]
+        if not area_id:
+            return None
+        return [*command, "--area-id", area_id]
     return list(command)
 
 
@@ -310,18 +312,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id",       type=int,  required=True)
     parser.add_argument("--scraper-type", type=str,  required=True)
-    parser.add_argument("--areas",        type=str,  required=True)
+    parser.add_argument("--area-id",      type=str)
+    parser.add_argument("--areas",        type=str)
     args = parser.parse_args()
 
     run_id       = args.run_id
     scraper_type = args.scraper_type
-    areas        = args.areas
+    area_id      = args.area_id
+    if not area_id and args.areas:
+        area_id = args.areas.split(",", 1)[0].strip()
 
-    logger.info(f"Starting run {run_id}: {scraper_type} for {areas}")
+    logger.info(
+        "Starting run %s: %s for %s",
+        run_id,
+        scraper_type,
+        area_id or "nationwide",
+    )
 
     start = time.time()
 
-    full_cmd = build_scraper_command(scraper_type, areas)
+    full_cmd = build_scraper_command(scraper_type, area_id)
     if not full_cmd:
         update_run(run_id, {
             "status": "failed",
