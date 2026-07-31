@@ -147,6 +147,46 @@ def fill_template(template: dict, context: dict) -> dict:
     }
 
 
+def load_templates_from_db(db) -> dict:
+    """
+    Load templates from database settings.
+    Falls back to hardcoded templates if DB has no settings.
+    """
+    try:
+        from sqlalchemy import text
+        rows = db.execute(text("""
+            SELECT key, value FROM email_settings
+            WHERE key LIKE 'template_%'
+        """)).fetchall()
+
+        if not rows:
+            return None
+
+        settings = {r.key: r.value for r in rows}
+
+        cold = {}
+        for i in range(1, 6):
+            key = f"template_cold_{i}"
+            subj = settings.get(f"{key}_subject")
+            body = settings.get(f"{key}_body")
+            if subj and body:
+                cold[f"template_{i}"] = {"subject": subj, "body": body}
+
+        followup_subj = settings.get("template_followup_subject")
+        followup_body = settings.get("template_followup_body")
+
+        return {
+            "cold":    cold if cold else None,
+            "followup": {
+                "subject": followup_subj,
+                "body":    followup_body,
+            } if followup_subj and followup_body else None,
+        }
+    except Exception as e:
+        logger.warning(f"Could not load templates from DB: {e}")
+        return None
+
+
 def build_context(lead: dict, user: CurrentUser) -> dict:
     return {
         "contact_name": (
@@ -255,12 +295,24 @@ def preview_email(
     lead    = dict(lead_row._mapping)
     context = build_context(lead, user)
 
+    # Load templates from DB, fall back to hardcoded
+    db_templates = load_templates_from_db(db)
+
     if body.email_type == "followup":
-        template      = FOLLOWUP_TEMPLATE
+        template = (
+            db_templates["followup"]
+            if db_templates and db_templates.get("followup")
+            else FOLLOWUP_TEMPLATE
+        )
         template_name = "followup"
     else:
-        template = COLD_TEMPLATES.get(
-            body.template_name, COLD_TEMPLATES["template_1"]
+        cold_source = (
+            db_templates["cold"]
+            if db_templates and db_templates.get("cold")
+            else COLD_TEMPLATES
+        )
+        template = cold_source.get(
+            body.template_name, cold_source.get("template_1", COLD_TEMPLATES["template_1"])
         )
         template_name = body.template_name
 
