@@ -148,39 +148,38 @@ def fill_template(template: dict, context: dict) -> dict:
 
 
 def load_templates_from_db(db) -> dict:
-    """
-    Load templates from database settings.
-    Falls back to hardcoded templates if DB has no settings.
-    """
+    """Load single cold + followup template from DB settings."""
     try:
         from sqlalchemy import text
         rows = db.execute(text("""
             SELECT key, value FROM email_settings
-            WHERE key LIKE 'template_%'
+            WHERE key IN (
+                'template_cold_subject', 'template_cold_body',
+                'template_followup_subject', 'template_followup_body',
+                'sender_name'
+            )
         """)).fetchall()
 
         if not rows:
             return None
 
-        settings = {r.key: r.value for r in rows}
+        s = {r.key: r.value for r in rows}
 
-        cold = {}
-        for i in range(1, 6):
-            key = f"template_cold_{i}"
-            subj = settings.get(f"{key}_subject")
-            body = settings.get(f"{key}_body")
-            if subj and body:
-                cold[f"template_{i}"] = {"subject": subj, "body": body}
-
-        followup_subj = settings.get("template_followup_subject")
-        followup_body = settings.get("template_followup_body")
+        cold_subj = s.get("template_cold_subject")
+        cold_body = s.get("template_cold_body")
+        fu_subj   = s.get("template_followup_subject")
+        fu_body   = s.get("template_followup_body")
 
         return {
-            "cold":    cold if cold else None,
+            "sender_name": s.get("sender_name", "Nyumba Zetu Sales"),
+            "cold": {
+                "subject": cold_subj,
+                "body":    cold_body,
+            } if cold_subj and cold_body else None,
             "followup": {
-                "subject": followup_subj,
-                "body":    followup_body,
-            } if followup_subj and followup_body else None,
+                "subject": fu_subj,
+                "body":    fu_body,
+            } if fu_subj and fu_body else None,
         }
     except Exception as e:
         logger.warning(f"Could not load templates from DB: {e}")
@@ -295,7 +294,7 @@ def preview_email(
     lead    = dict(lead_row._mapping)
     context = build_context(lead, user)
 
-    # Load templates from DB, fall back to hardcoded
+    # Load from DB — fallback to hardcoded if not configured
     db_templates = load_templates_from_db(db)
 
     if body.email_type == "followup":
@@ -306,15 +305,13 @@ def preview_email(
         )
         template_name = "followup"
     else:
-        cold_source = (
+        db_cold = (
             db_templates["cold"]
             if db_templates and db_templates.get("cold")
-            else COLD_TEMPLATES
+            else None
         )
-        template = cold_source.get(
-            body.template_name, cold_source.get("template_1", COLD_TEMPLATES["template_1"])
-        )
-        template_name = body.template_name
+        template      = db_cold or COLD_TEMPLATES["template_1"]
+        template_name = "cold"
 
     filled     = fill_template(template, context)
     final_body = body.custom_body or filled["body"]
