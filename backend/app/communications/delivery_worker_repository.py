@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 _MESSAGE_FIELDS = (
     "id",
+    "newsletter_id",
+    "newsletter_recipient_id",
     "campaign_id",
     "campaign_recipient_id",
     "campaign_step_id",
@@ -122,6 +124,8 @@ def claim_due_messages(
             WHERE m.id = due.id
             RETURNING
                 m.id,
+                m.newsletter_id,
+                m.newsletter_recipient_id,
                 m.campaign_id,
                 m.campaign_recipient_id,
                 m.campaign_step_id,

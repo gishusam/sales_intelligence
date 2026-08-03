@@ -74,6 +74,19 @@ def process_claimed_message(
     max_attempts: int,
     now: datetime,
 ) -> str:
+    if message.get("message_type") == "newsletter":
+        from app.communications.newsletter_delivery_worker import (
+            process_newsletter_message,
+        )
+
+        return process_newsletter_message(
+            db=db,
+            message=message,
+            provider=provider,
+            max_attempts=max_attempts,
+            now=now,
+        )
+
     campaign_id = message.get("campaign_id")
 
     if not campaign_id:

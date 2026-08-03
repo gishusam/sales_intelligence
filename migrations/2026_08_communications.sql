@@ -792,3 +792,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS
         lead_id
     )
     WHERE lead_id IS NOT NULL;
+
+-- Bulk newsletter scheduling and delivery
+ALTER TABLE newsletter_drafts
+    ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+
+ALTER TABLE newsletter_recipients
+    ADD COLUMN IF NOT EXISTS queued_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS newsletter_recipient_id BIGINT
+        REFERENCES newsletter_recipients(id) ON DELETE SET NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_email_messages_newsletter_recipient
+    ON email_messages (newsletter_recipient_id)
+    WHERE newsletter_recipient_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_newsletter_recipients_delivery_status
+    ON newsletter_recipients (newsletter_id, status);
