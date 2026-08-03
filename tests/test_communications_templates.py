@@ -104,3 +104,24 @@ def test_renders_template_subject_and_body():
         "We support property teams in Kilimani.\n\n"
         "Regards,\nSamwel"
     )
+
+
+def test_rendering_rejects_missing_placeholder_values():
+    from app.communications.templates import render_template
+
+    with pytest.raises(
+        ValueError,
+        match=r"Missing template values: area, rep_name",
+    ):
+        render_template(
+            subject="A better workflow for {company_name}",
+            body=(
+                "Hi {contact_name},\n"
+                "We support teams in {area}.\n"
+                "Regards, {rep_name}"
+            ),
+            values={
+                "company_name": "Example Agency",
+                "contact_name": "Alice",
+            },
+        )

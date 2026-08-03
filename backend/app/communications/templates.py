@@ -49,6 +49,16 @@ def render_template(
 ) -> tuple[str, str]:
     """Render placeholder values into a template subject and body."""
 
+    placeholders = extract_placeholders(
+        subject=subject,
+        body=body,
+    )
+    missing = placeholders - values.keys()
+
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise ValueError(f"Missing template values: {names}")
+
     def replace(match: re.Match[str]) -> str:
         placeholder = match.group(1)
         return str(values[placeholder])
