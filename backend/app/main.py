@@ -11,6 +11,7 @@ from app.routers import reports
 from app.routers import email as email_router
 from app.routers import communications as communications_router
 from app.routers import communication_messages as communication_messages_router
+from app.routers import communication_campaigns as communication_campaigns_router
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 
@@ -39,6 +40,7 @@ app.include_router(reports.router)
 app.include_router(email_router.router)
 app.include_router(communications_router.router)
 app.include_router(communication_messages_router.router)
+app.include_router(communication_campaigns_router.router)
 
 
 

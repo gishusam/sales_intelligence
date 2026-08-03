@@ -510,3 +510,66 @@ ALTER TABLE suppression_list
 CREATE UNIQUE INDEX IF NOT EXISTS uq_suppression_list_normalized_email
     ON suppression_list (LOWER(email_address))
     WHERE email_address IS NOT NULL;
+
+-- Draft campaign foundation columns
+ALTER TABLE campaigns
+    ADD COLUMN IF NOT EXISTS description TEXT,
+    ADD COLUMN IF NOT EXISTS campaign_type TEXT NOT NULL DEFAULT 'cold',
+    ADD COLUMN IF NOT EXISTS sender_identity_id BIGINT
+        REFERENCES sender_identities(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft',
+    ADD COLUMN IF NOT EXISTS created_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS updated_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE campaign_steps
+    ADD COLUMN IF NOT EXISTS step_order INTEGER,
+    ADD COLUMN IF NOT EXISTS delay_days INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS template_id BIGINT
+        REFERENCES communication_templates(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS subject_override TEXT,
+    ADD COLUMN IF NOT EXISTS body_text_override TEXT,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE campaign_recipients
+    ADD COLUMN IF NOT EXISTS lead_id INTEGER
+        REFERENCES leads(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS recipient_email TEXT,
+    ADD COLUMN IF NOT EXISTS recipient_name TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'enrolled',
+    ADD COLUMN IF NOT EXISTS suppression_reason TEXT,
+    ADD COLUMN IF NOT EXISTS enrolled_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_campaign_steps_order
+    ON campaign_steps (campaign_id, step_order)
+    WHERE step_order IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_campaign_recipients_lead
+    ON campaign_recipients (campaign_id, lead_id)
+    WHERE lead_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_campaign_recipients_email
+    ON campaign_recipients (
+        campaign_id,
+        LOWER(recipient_email)
+    )
+    WHERE recipient_email IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_campaigns_status_created
+    ON campaigns (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS
+    idx_campaign_recipients_status
+    ON campaign_recipients (campaign_id, status);
