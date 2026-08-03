@@ -17,6 +17,8 @@ from app.routers import communication_delivery_worker as communication_delivery_
 from app.routers import communication_automation as communication_automation_router
 from app.routers import communication_newsletters as communication_newsletters_router
 from app.routers import communication_newsletter_delivery as communication_newsletter_delivery_router
+from app.routers import communication_provider_events as communication_provider_events_router
+from app.routers import communication_overview as communication_overview_router
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 
@@ -51,6 +53,8 @@ app.include_router(communication_delivery_worker_router.router)
 app.include_router(communication_automation_router.router)
 app.include_router(communication_newsletters_router.router)
 app.include_router(communication_newsletter_delivery_router.router)
+app.include_router(communication_provider_events_router.router)
+app.include_router(communication_overview_router.router)
 
 
 

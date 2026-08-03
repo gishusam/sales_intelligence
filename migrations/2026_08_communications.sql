@@ -817,3 +817,63 @@ CREATE UNIQUE INDEX IF NOT EXISTS
 CREATE INDEX IF NOT EXISTS
     idx_newsletter_recipients_delivery_status
     ON newsletter_recipients (newsletter_id, status);
+
+-- Provider events and Communications overview
+ALTER TABLE email_events
+    ADD COLUMN IF NOT EXISTS provider TEXT,
+    ADD COLUMN IF NOT EXISTS provider_event_id TEXT,
+    ADD COLUMN IF NOT EXISTS email_message_id BIGINT
+        REFERENCES email_messages(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS provider_message_id TEXT,
+    ADD COLUMN IF NOT EXISTS event_type TEXT,
+    ADD COLUMN IF NOT EXISTS recipient_email TEXT,
+    ADD COLUMN IF NOT EXISTS bounce_type TEXT,
+    ADD COLUMN IF NOT EXISTS reason TEXT,
+    ADD COLUMN IF NOT EXISTS url TEXT,
+    ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+    ADD COLUMN IF NOT EXISTS signature_verified BOOLEAN
+        NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'processed',
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ
+        NOT NULL DEFAULT NOW();
+
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS complained_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS clicked_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS open_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS click_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS bounce_type TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_email_events_provider_event
+    ON email_events (
+        provider,
+        provider_event_id
+    )
+    WHERE
+        provider IS NOT NULL
+        AND provider_event_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_events_message_occurred
+    ON email_events (
+        email_message_id,
+        occurred_at DESC
+    );
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_events_type_occurred
+    ON email_events (
+        event_type,
+        occurred_at DESC
+    );
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_messages_provider_message_id
+    ON email_messages (provider_message_id)
+    WHERE provider_message_id IS NOT NULL;
