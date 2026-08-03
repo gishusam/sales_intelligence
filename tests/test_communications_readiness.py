@@ -78,6 +78,9 @@ def test_staging_accepts_complete_safe_environment():
             "NEWSLETTER_UNSUBSCRIBE_SECRET": "unsubscribe-secret",
             "PUBLIC_API_BASE_URL": "https://staging.example.test",
             "COMMUNICATIONS_SMTP_MOCK": "false",
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_USER": "smtp-user",
+            "SMTP_PASSWORD": "smtp-password",
         }
     )
 

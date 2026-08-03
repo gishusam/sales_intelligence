@@ -39,6 +39,9 @@ def environment_issues(
         "COMMUNICATIONS_WORKER_TOKEN",
         "EMAIL_WEBHOOK_SECRET",
         "NEWSLETTER_UNSUBSCRIBE_SECRET",
+        "SMTP_HOST",
+        "SMTP_USER",
+        "SMTP_PASSWORD",
     ):
         if not environ.get(key, "").strip():
             issues.append(f"{key} is required")
@@ -98,6 +101,13 @@ def build_readiness_report(
                 f"Missing index: {item}"
                 for item in schema["missing_indexes"]
             ),
+            *(
+                f"Schema mismatch: {item}"
+                for item in schema.get(
+                    "mismatched_constraints",
+                    [],
+                )
+            ),
         ]
     except Exception as exc:
         schema = {
@@ -105,6 +115,7 @@ def build_readiness_report(
             "missing_tables": [],
             "missing_columns": [],
             "missing_indexes": [],
+            "mismatched_constraints": [],
             "error": type(exc).__name__,
         }
         schema_issues = [

@@ -446,23 +446,40 @@ def test_send(
     )
     db.commit()
 
-    result = (provider or SMTPEmailProvider()).send(
-        OutboundMessage(
-            from_name=sender["display_name"],
-            from_email=sender["email_address"],
-            reply_to=sender.get("reply_to_address"),
-            to_email=payload.to_email,
-            subject=item["subject"],
-            body_text=body_text,
-            body_html=body_html,
+    try:
+        result = (provider or SMTPEmailProvider()).send(
+            OutboundMessage(
+                from_name=sender["display_name"],
+                from_email=sender["email_address"],
+                reply_to=sender.get("reply_to_address"),
+                to_email=payload.to_email,
+                subject=item["subject"],
+                body_text=body_text,
+                body_html=body_html,
+            )
         )
-    )
+    except Exception as exc:
+        error = str(exc) or "Newsletter test delivery failed"
+        repository.mark_test_failed(
+            db=db,
+            message_id=message_id,
+            error_message=error,
+        )
+        db.commit()
+        raise NewsletterValidationError(error) from exc
 
     if not result.accepted:
-        raise NewsletterValidationError(
+        error = (
             result.error_message
             or "Newsletter test delivery failed"
         )
+        repository.mark_test_failed(
+            db=db,
+            message_id=message_id,
+            error_message=error,
+        )
+        db.commit()
+        raise NewsletterValidationError(error)
 
     repository.mark_test_sent(
         db=db,

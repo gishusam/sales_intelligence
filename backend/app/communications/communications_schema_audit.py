@@ -33,6 +33,7 @@ REQUIRED_COLUMNS = frozenset(
     {
         ("email_messages", "provider_message_id"),
         ("email_messages", "idempotency_key"),
+        ("email_messages", "recipient_email"),
         ("email_messages", "next_attempt_at"),
         ("email_messages", "locked_at"),
         ("email_messages", "locked_by"),
@@ -51,6 +52,18 @@ REQUIRED_COLUMNS = frozenset(
     }
 )
 
+REQUIRED_NULLABLE_COLUMNS = frozenset(
+    {
+        ("email_messages", "from_name"),
+        ("email_messages", "from_email"),
+        ("email_messages", "to_email"),
+        ("email_events", "email_message_id"),
+        ("newsletter_drafts", "title"),
+        ("automation_executions", "automation_rule_id"),
+        ("suppression_list", "email"),
+    }
+)
+
 REQUIRED_INDEXES = frozenset(
     {
         "uq_email_messages_idempotency_key",
@@ -62,6 +75,42 @@ REQUIRED_INDEXES = frozenset(
         "uq_newsletter_draft_articles",
     }
 )
+
+REQUIRED_CHECK_CONSTRAINT_TOKENS = {
+    "email_message_type_check": {
+        "campaign",
+        "automation",
+        "newsletter_test",
+    },
+    "email_message_status_check": {
+        "processing",
+        "dead_letter",
+        "delivered",
+        "bounced",
+        "complained",
+        "unsubscribed",
+    },
+    "campaign_status_check": {
+        "ready",
+        "scheduled",
+        "running",
+    },
+    "campaign_recipient_status_check": {
+        "enrolled",
+        "delivered",
+        "bounced",
+        "complained",
+    },
+    "newsletter_draft_status_check": {
+        "in_review",
+        "sending",
+        "cancelled",
+    },
+    "newsletter_source_type_check": {
+        "api",
+        "n8n",
+    },
+}
 
 
 def _value(row: Any, name: str) -> Any:
@@ -88,7 +137,10 @@ def inspect_schema(*, db: Session) -> dict[str, Any]:
     column_rows = db.execute(
         text(
             """
-            SELECT table_name, column_name
+            SELECT
+                table_name,
+                column_name,
+                is_nullable
             FROM information_schema.columns
             WHERE table_schema = 'public'
             """
@@ -105,6 +157,18 @@ def inspect_schema(*, db: Session) -> dict[str, Any]:
         ),
         {},
     ).fetchall()
+    constraint_rows = db.execute(
+        text(
+            """
+            SELECT
+                constraint_name,
+                check_clause
+            FROM information_schema.check_constraints
+            WHERE constraint_schema = 'public'
+            """
+        ),
+        {},
+    ).fetchall()
 
     present_tables = {
         str(_value(row, "table_name"))
@@ -117,9 +181,23 @@ def inspect_schema(*, db: Session) -> dict[str, Any]:
         )
         for row in column_rows
     }
+    nullable_columns = {
+        (
+            str(_value(row, "table_name")),
+            str(_value(row, "column_name")),
+        )
+        for row in column_rows
+        if str(_value(row, "is_nullable")).upper() == "YES"
+    }
     present_indexes = {
         str(_value(row, "indexname"))
         for row in index_rows
+    }
+    check_constraints = {
+        str(_value(row, "constraint_name")): str(
+            _value(row, "check_clause") or ""
+        ).lower()
+        for row in constraint_rows
     }
 
     missing_tables = sorted(
@@ -135,13 +213,42 @@ def inspect_schema(*, db: Session) -> dict[str, Any]:
         REQUIRED_INDEXES - present_indexes
     )
 
+    mismatched_constraints = sorted(
+        [
+            *(
+                f"{table_name}.{column_name} must be nullable"
+                for table_name, column_name in (
+                    REQUIRED_NULLABLE_COLUMNS
+                    - nullable_columns
+                )
+            ),
+            *(
+                (
+                    f"{constraint_name} must include "
+                    f"{', '.join(sorted(tokens))}"
+                )
+                for constraint_name, tokens
+                in REQUIRED_CHECK_CONSTRAINT_TOKENS.items()
+                if (
+                    constraint_name not in check_constraints
+                    or any(
+                        token not in check_constraints[constraint_name]
+                        for token in tokens
+                    )
+                )
+            ),
+        ]
+    )
+
     return {
         "ready": not (
             missing_tables
             or missing_columns
             or missing_indexes
+            or mismatched_constraints
         ),
         "missing_tables": missing_tables,
         "missing_columns": missing_columns,
         "missing_indexes": missing_indexes,
+        "mismatched_constraints": mismatched_constraints,
     }

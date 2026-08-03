@@ -15,18 +15,29 @@ from pydantic import (
 CampaignType = Literal["cold", "followup", "newsletter"]
 CampaignStatus = Literal[
     "draft",
+    "ready",
+    "scheduled",
+    "running",
     "active",
     "paused",
     "completed",
     "cancelled",
+    "failed",
 ]
 RecipientStatus = Literal[
+    "pending",
     "enrolled",
     "queued",
     "sent",
+    "delivered",
     "failed",
     "suppressed",
     "cancelled",
+    "bounced",
+    "complained",
+    "unsubscribed",
+    "replied",
+    "skipped",
 ]
 
 

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -17,6 +18,13 @@ TrustTier = Literal["verified", "review_required", "experimental"]
 ArticleStatus = Literal["new", "selected", "used", "rejected"]
 
 
+def validate_http_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL must use HTTP or HTTPS")
+    return value
+
+
 class NewsSourceCreate(BaseModel):
     model_config = ConfigDict(
         str_strip_whitespace=True,
@@ -29,6 +37,11 @@ class NewsSourceCreate(BaseModel):
     publisher: str = Field(min_length=1, max_length=180)
     trust_tier: TrustTier = "review_required"
     is_active: bool = False
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return validate_http_url(value)
 
 
 class NewsSourceUpdate(BaseModel):
@@ -56,6 +69,11 @@ class NewsSourceUpdate(BaseModel):
     trust_tier: TrustTier | None = None
     is_active: bool | None = None
 
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str | None) -> str | None:
+        return validate_http_url(value) if value is not None else None
+
     @model_validator(mode="after")
     def require_change(self) -> "NewsSourceUpdate":
         if not self.model_fields_set:
@@ -79,6 +97,11 @@ class NewsArticleInput(BaseModel):
     summary: str | None = Field(default=None, max_length=10000)
     content_text: str | None = Field(default=None, max_length=100000)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("canonical_url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return validate_http_url(value)
 
     @field_validator("published_at")
     @classmethod

@@ -473,7 +473,6 @@ FROM anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public
 FROM anon, authenticated;
 
-COMMIT;
 
 -- Canonical manual-message delivery columns
 ALTER TABLE email_messages
@@ -999,3 +998,222 @@ CREATE INDEX IF NOT EXISTS
         status,
         created_at DESC
     );
+
+-- Canonical runtime contract reconciliation
+-- The foundation above preserves legacy columns for compatibility. These
+-- changes make their nullability, defaults, and checks match the runtime API.
+
+UPDATE email_messages
+SET recipient_email = COALESCE(recipient_email, to_email)
+WHERE recipient_email IS NULL;
+
+ALTER TABLE email_messages
+    ALTER COLUMN from_name DROP NOT NULL,
+    ALTER COLUMN from_email DROP NOT NULL,
+    ALTER COLUMN to_email DROP NOT NULL;
+
+ALTER TABLE email_messages
+    DROP CONSTRAINT IF EXISTS email_message_type_check,
+    DROP CONSTRAINT IF EXISTS email_message_status_check;
+
+ALTER TABLE email_messages
+    ADD CONSTRAINT email_message_type_check
+        CHECK (
+            message_type IN (
+                'manual',
+                'cold',
+                'followup',
+                'newsletter',
+                'newsletter_test',
+                'campaign',
+                'automation'
+            )
+        ),
+    ADD CONSTRAINT email_message_status_check
+        CHECK (
+            status IN (
+                'draft',
+                'queued',
+                'processing',
+                'sending',
+                'sent',
+                'delivered',
+                'failed',
+                'dead_letter',
+                'suppressed',
+                'cancelled',
+                'bounced',
+                'complained',
+                'unsubscribed'
+            )
+        );
+
+ALTER TABLE campaigns
+    DROP CONSTRAINT IF EXISTS campaign_status_check;
+
+ALTER TABLE campaigns
+    ADD CONSTRAINT campaign_status_check
+        CHECK (
+            status IN (
+                'draft',
+                'ready',
+                'scheduled',
+                'running',
+                'active',
+                'paused',
+                'completed',
+                'cancelled',
+                'failed'
+            )
+        );
+
+ALTER TABLE campaign_recipients
+    DROP CONSTRAINT IF EXISTS campaign_recipient_status_check;
+
+ALTER TABLE campaign_recipients
+    ADD CONSTRAINT campaign_recipient_status_check
+        CHECK (
+            status IN (
+                'pending',
+                'enrolled',
+                'queued',
+                'sent',
+                'delivered',
+                'failed',
+                'suppressed',
+                'cancelled',
+                'bounced',
+                'complained',
+                'unsubscribed',
+                'replied',
+                'skipped'
+            )
+        );
+
+ALTER TABLE automation_rules
+    ALTER COLUMN automation_type SET DEFAULT 'followup',
+    ALTER COLUMN status SET DEFAULT 'draft';
+
+ALTER TABLE automation_executions
+    ALTER COLUMN automation_rule_id DROP NOT NULL;
+
+UPDATE suppression_list
+SET email_address = COALESCE(email_address, email)
+WHERE email_address IS NULL;
+
+ALTER TABLE suppression_list
+    ALTER COLUMN email DROP NOT NULL,
+    ALTER COLUMN email_address SET NOT NULL,
+    DROP CONSTRAINT IF EXISTS suppression_reason_check;
+
+UPDATE newsletter_drafts
+SET name = COALESCE(name, title, 'Untitled newsletter')
+WHERE name IS NULL;
+
+ALTER TABLE newsletter_drafts
+    ALTER COLUMN title DROP NOT NULL,
+    ALTER COLUMN name SET NOT NULL,
+    DROP CONSTRAINT IF EXISTS newsletter_draft_status_check;
+
+ALTER TABLE newsletter_drafts
+    ADD CONSTRAINT newsletter_draft_status_check
+        CHECK (
+            status IN (
+                'draft',
+                'review',
+                'in_review',
+                'approved',
+                'scheduled',
+                'sending',
+                'sent',
+                'cancelled',
+                'archived'
+            )
+        );
+
+ALTER TABLE email_events
+    ALTER COLUMN email_message_id DROP NOT NULL,
+    DROP CONSTRAINT IF EXISTS email_event_type_check;
+
+ALTER TABLE email_events
+    ADD CONSTRAINT email_event_type_check
+        CHECK (
+            event_type IN (
+                'queued',
+                'sent',
+                'delivered',
+                'opened',
+                'clicked',
+                'bounced',
+                'hard_bounce',
+                'soft_bounce',
+                'complained',
+                'complaint',
+                'unsubscribed',
+                'unsubscribe',
+                'replied',
+                'failed'
+            )
+        );
+
+UPDATE newsletter_sources
+SET url = COALESCE(url, source_url)
+WHERE url IS NULL;
+
+ALTER TABLE newsletter_sources
+    ALTER COLUMN is_active SET DEFAULT FALSE,
+    DROP CONSTRAINT IF EXISTS newsletter_source_type_check;
+
+ALTER TABLE newsletter_sources
+    ADD CONSTRAINT newsletter_source_type_check
+        CHECK (
+            source_type IN (
+                'rss',
+                'api',
+                'url',
+                'manual',
+                'n8n'
+            )
+        );
+
+ALTER TABLE newsletter_recipients
+    DROP CONSTRAINT IF EXISTS newsletter_recipient_status_check;
+
+ALTER TABLE newsletter_recipients
+    ADD CONSTRAINT newsletter_recipient_status_check
+        CHECK (
+            status IN (
+                'eligible',
+                'queued',
+                'sent',
+                'delivered',
+                'failed',
+                'suppressed',
+                'cancelled',
+                'bounced',
+                'complained',
+                'unsubscribed'
+            )
+        );
+
+-- Later-created tables need the same direct-API protection as the foundation.
+ALTER TABLE newsletter_recipients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lead_communication_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE newsletter_articles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE newsletter_ingestion_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE newsletter_generation_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE newsletter_draft_articles ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE
+    newsletter_recipients,
+    lead_communication_state,
+    newsletter_articles,
+    newsletter_ingestion_runs,
+    newsletter_generation_runs,
+    newsletter_draft_articles
+FROM anon, authenticated;
+
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public
+FROM anon, authenticated;
+
+COMMIT;

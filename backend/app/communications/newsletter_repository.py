@@ -1,6 +1,7 @@
 """Newsletter persistence."""
 
 import json
+import uuid
 from typing import Any
 
 from sqlalchemy import text
@@ -483,7 +484,8 @@ def create_test_message(
             "body_html": body_html,
             "idempotency_key": (
                 f"newsletter-test:{newsletter_id}:"
-                f"{recipient_email}:{sent_by}"
+                f"{recipient_email}:{sent_by}:"
+                f"{uuid.uuid4().hex}"
             ),
         },
     ).fetchone()
@@ -512,6 +514,31 @@ def mark_test_sent(
         {
             "message_id": message_id,
             "provider_message_id": provider_message_id,
+        },
+    )
+
+
+def mark_test_failed(
+    *,
+    db: Session,
+    message_id: int,
+    error_message: str,
+) -> None:
+    db.execute(
+        text(
+            """
+            UPDATE email_messages
+            SET
+                status = 'failed',
+                error_message = :error_message,
+                failed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :message_id
+            """
+        ),
+        {
+            "message_id": message_id,
+            "error_message": error_message[:2000],
         },
     )
 

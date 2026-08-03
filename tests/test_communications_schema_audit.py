@@ -28,7 +28,7 @@ class FakeDb:
         return self.responses.pop(0)
 
 
-def test_schema_audit_reports_missing_objects():
+def test_schema_audit_reports_missing_and_mismatched_objects():
     from app.communications.communications_schema_audit import (
         inspect_schema,
     )
@@ -45,9 +45,11 @@ def test_schema_audit_reports_missing_objects():
                     SimpleNamespace(
                         table_name="email_messages",
                         column_name="status",
+                        is_nullable="NO",
                     ),
                 ]
             ),
+            Result(rows=[]),
             Result(rows=[]),
         ]
     )
@@ -62,25 +64,43 @@ def test_schema_audit_reports_missing_objects():
     assert "uq_email_events_provider_event" in (
         result["missing_indexes"]
     )
+    assert result["mismatched_constraints"]
 
 
-def test_schema_audit_accepts_complete_snapshot(monkeypatch):
+def test_schema_audit_accepts_complete_snapshot():
     from app.communications import communications_schema_audit as audit
 
     table_rows = [
         SimpleNamespace(table_name=name)
         for name in audit.REQUIRED_TABLES
     ]
+    nullable = audit.REQUIRED_NULLABLE_COLUMNS
     column_rows = [
         SimpleNamespace(
             table_name=table_name,
             column_name=column_name,
+            is_nullable=(
+                "YES"
+                if (table_name, column_name) in nullable
+                else "NO"
+            ),
         )
-        for table_name, column_name in audit.REQUIRED_COLUMNS
+        for table_name, column_name in (
+            audit.REQUIRED_COLUMNS
+            | audit.REQUIRED_NULLABLE_COLUMNS
+        )
     ]
     index_rows = [
         SimpleNamespace(indexname=name)
         for name in audit.REQUIRED_INDEXES
+    ]
+    constraint_rows = [
+        SimpleNamespace(
+            constraint_name=name,
+            check_clause=" ".join(sorted(tokens)),
+        )
+        for name, tokens
+        in audit.REQUIRED_CHECK_CONSTRAINT_TOKENS.items()
     ]
 
     result = audit.inspect_schema(
@@ -89,6 +109,7 @@ def test_schema_audit_accepts_complete_snapshot(monkeypatch):
                 Result(rows=table_rows),
                 Result(rows=column_rows),
                 Result(rows=index_rows),
+                Result(rows=constraint_rows),
             ]
         )
     )
@@ -98,6 +119,7 @@ def test_schema_audit_accepts_complete_snapshot(monkeypatch):
         "missing_tables": [],
         "missing_columns": [],
         "missing_indexes": [],
+        "mismatched_constraints": [],
     }
 
 
@@ -111,16 +133,21 @@ def test_audit_queries_only_metadata_catalogues():
             Result(rows=[]),
             Result(rows=[]),
             Result(rows=[]),
+            Result(rows=[]),
         ]
     )
 
     inspect_schema(db=db)
 
-    statements = "\n".join(call[0] for call in db.calls).lower()
+    statements = "\n".join(
+        call[0]
+        for call in db.calls
+    ).lower()
 
     assert "information_schema.tables" in statements
     assert "information_schema.columns" in statements
     assert "pg_indexes" in statements
+    assert "information_schema.check_constraints" in statements
     assert "insert " not in statements
     assert "update " not in statements
     assert "delete " not in statements

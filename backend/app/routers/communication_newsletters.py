@@ -15,6 +15,7 @@ from app.communications import newsletter_service
 from app.communications.newsletter_schemas import (
     NewsletterAudienceRequest,
     NewsletterCreate,
+    NewsletterResponse,
     NewsletterStatus,
     NewsletterTestSendRequest,
     NewsletterUpdate,
@@ -52,7 +53,7 @@ def translate_error(exc):
     return HTTPException(422, str(exc))
 
 
-@router.get("")
+@router.get("", response_model=list[NewsletterResponse])
 def list_newsletters(
     status_filter: NewsletterStatus | None = Query(None),
     db: Session = Depends(get_db),
@@ -64,7 +65,7 @@ def list_newsletters(
     )
 
 
-@router.get("/{newsletter_id}")
+@router.get("/{newsletter_id:int}", response_model=NewsletterResponse)
 def get_newsletter(
     newsletter_id: int,
     db: Session = Depends(get_db),
@@ -81,7 +82,11 @@ def get_newsletter(
     return item
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=NewsletterResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_newsletter(
     payload: NewsletterCreate,
     db: Session = Depends(get_db),
@@ -99,7 +104,10 @@ def create_newsletter(
         raise translate_error(exc) from exc
 
 
-@router.put("/{newsletter_id}")
+@router.put(
+    "/{newsletter_id}",
+    response_model=NewsletterResponse,
+)
 def update_newsletter(
     newsletter_id: int,
     payload: NewsletterUpdate,

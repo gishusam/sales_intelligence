@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -17,6 +18,7 @@ NewsletterStatus = Literal[
     "in_review",
     "approved",
     "scheduled",
+    "sending",
     "sent",
     "cancelled",
 ]
@@ -32,6 +34,16 @@ class NewsletterBlock(BaseModel):
     kind: BlockKind
     text: str | None = Field(default=None, max_length=5000)
     url: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str | None) -> str | None:
+        if value is None or value == "{unsubscribe_link}":
+            return value
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Link URL must use HTTP or HTTPS")
+        return value
 
     @model_validator(mode="after")
     def validate_block(self) -> "NewsletterBlock":
