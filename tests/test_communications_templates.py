@@ -78,3 +78,29 @@ def test_rejects_missing_required_placeholders():
                 "rep_email",
             },
         )
+
+
+def test_renders_template_subject_and_body():
+    from app.communications.templates import render_template
+
+    subject, body = render_template(
+        subject="A better workflow for {company_name}",
+        body=(
+            "Hi {contact_name},\n\n"
+            "We support property teams in {area}.\n\n"
+            "Regards,\n{rep_name}"
+        ),
+        values={
+            "company_name": "Example Agency",
+            "contact_name": "Alice",
+            "area": "Kilimani",
+            "rep_name": "Samwel",
+        },
+    )
+
+    assert subject == "A better workflow for Example Agency"
+    assert body == (
+        "Hi Alice,\n\n"
+        "We support property teams in Kilimani.\n\n"
+        "Regards,\nSamwel"
+    )

@@ -39,3 +39,21 @@ def validate_template_placeholders(
         raise ValueError(f"Missing required placeholders: {names}")
 
     return placeholders
+
+
+def render_template(
+    *,
+    subject: str,
+    body: str,
+    values: dict[str, object],
+) -> tuple[str, str]:
+    """Render placeholder values into a template subject and body."""
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = match.group(1)
+        return str(values[placeholder])
+
+    rendered_subject = _PLACEHOLDER_PATTERN.sub(replace, subject)
+    rendered_body = _PLACEHOLDER_PATTERN.sub(replace, body)
+
+    return rendered_subject, rendered_body
