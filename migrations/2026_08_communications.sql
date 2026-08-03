@@ -474,3 +474,39 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA public
 FROM anon, authenticated;
 
 COMMIT;
+
+-- Canonical manual-message delivery columns
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS template_id BIGINT
+        REFERENCES communication_templates(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS sender_identity_id BIGINT
+        REFERENCES sender_identities(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS sent_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS recipient_email TEXT,
+    ADD COLUMN IF NOT EXISTS recipient_name TEXT,
+    ADD COLUMN IF NOT EXISTS body_text TEXT,
+    ADD COLUMN IF NOT EXISTS body_html TEXT,
+    ADD COLUMN IF NOT EXISTS message_type TEXT NOT NULL DEFAULT 'manual',
+    ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+    ADD COLUMN IF NOT EXISTS provider_message_id TEXT,
+    ADD COLUMN IF NOT EXISTS attachment_name TEXT,
+    ADD COLUMN IF NOT EXISTS attachment_content_type TEXT,
+    ADD COLUMN IF NOT EXISTS attachment_size INTEGER,
+    ADD COLUMN IF NOT EXISTS follow_up_date DATE,
+    ADD COLUMN IF NOT EXISTS error_message TEXT,
+    ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_email_messages_idempotency_key
+    ON email_messages (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+ALTER TABLE suppression_list
+    ADD COLUMN IF NOT EXISTS email_address TEXT,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_suppression_list_normalized_email
+    ON suppression_list (LOWER(email_address))
+    WHERE email_address IS NOT NULL;

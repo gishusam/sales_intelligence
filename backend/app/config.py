@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     JWT_SECRET_KEY: str
     DEBUG: bool = False
+    APP_ENV: str = "development"
+    EMAIL_DELIVERY_MODE: str = "normal"
+    EMAIL_ALLOWED_RECIPIENTS: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_TLS: bool = True
     ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"
         "http://127.0.0.1:8080,"
