@@ -13,6 +13,7 @@ from app.routers import communications as communications_router
 from app.routers import communication_messages as communication_messages_router
 from app.routers import communication_campaigns as communication_campaigns_router
 from app.routers import communication_campaign_lifecycle as communication_campaign_lifecycle_router
+from app.routers import communication_delivery_worker as communication_delivery_worker_router
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 
@@ -43,6 +44,7 @@ app.include_router(communications_router.router)
 app.include_router(communication_messages_router.router)
 app.include_router(communication_campaigns_router.router)
 app.include_router(communication_campaign_lifecycle_router.router)
+app.include_router(communication_delivery_worker_router.router)
 
 
 

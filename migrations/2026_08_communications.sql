@@ -627,3 +627,41 @@ CREATE INDEX IF NOT EXISTS
     WHERE
         message_type = 'campaign'
         AND status = 'queued';
+
+-- Asynchronous delivery worker columns
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS locked_by TEXT,
+    ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
+
+UPDATE email_messages
+SET next_attempt_at = COALESCE(
+    next_attempt_at,
+    scheduled_for,
+    created_at
+)
+WHERE
+    status = 'queued'
+    AND next_attempt_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_messages_worker_due
+    ON email_messages (
+        status,
+        next_attempt_at,
+        id
+    )
+    WHERE
+        message_type = 'campaign'
+        AND status = 'queued';
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_messages_stale_processing
+    ON email_messages (
+        status,
+        locked_at
+    )
+    WHERE status = 'processing';

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_USE_TLS: bool = True
+    COMMUNICATIONS_WORKER_TOKEN: str = ""
+    COMMUNICATIONS_WORKER_BATCH_SIZE: int = 25
+    COMMUNICATIONS_MAX_ATTEMPTS: int = 5
+    COMMUNICATIONS_LOCK_TIMEOUT_MINUTES: int = 15
     ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"
         "http://127.0.0.1:8080,"
