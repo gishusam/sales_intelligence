@@ -34,3 +34,23 @@ def test_extracts_placeholders_from_subject_and_body():
         "rep_name",
         "rep_email",
     }
+
+
+def test_rejects_unsupported_placeholders():
+    from app.communications.templates import validate_template_placeholders
+
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported placeholders: customer_name",
+    ):
+        validate_template_placeholders(
+            subject="Hello {customer_name}",
+            body="Regards, {rep_name}",
+            allowed_placeholders={
+                "contact_name",
+                "company_name",
+                "area",
+                "rep_name",
+                "rep_email",
+            },
+        )
