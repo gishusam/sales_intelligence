@@ -1,21 +1,14 @@
 import pytest
 
-
-def load_extract_placeholders():
-    try:
-        from app.communications.templates import extract_placeholders
-    except (ImportError, ModuleNotFoundError):
-        pytest.fail(
-            "Create app.communications.templates.extract_placeholders",
-            pytrace=False,
-        )
-
-    return extract_placeholders
+from app.communications.templates import (
+    extract_placeholders,
+    render_template,
+    validate_template,
+    validate_template_placeholders,
+)
 
 
 def test_extracts_placeholders_from_subject_and_body():
-    extract_placeholders = load_extract_placeholders()
-
     placeholders = extract_placeholders(
         subject="A better workflow for {company_name}",
         body=(
@@ -37,8 +30,6 @@ def test_extracts_placeholders_from_subject_and_body():
 
 
 def test_rejects_unsupported_placeholders():
-    from app.communications.templates import validate_template_placeholders
-
     with pytest.raises(
         ValueError,
         match=r"Unsupported placeholders: customer_name",
@@ -57,8 +48,6 @@ def test_rejects_unsupported_placeholders():
 
 
 def test_rejects_missing_required_placeholders():
-    from app.communications.templates import validate_template_placeholders
-
     with pytest.raises(
         ValueError,
         match=r"Missing required placeholders: rep_email, rep_name",
@@ -81,8 +70,6 @@ def test_rejects_missing_required_placeholders():
 
 
 def test_renders_template_subject_and_body():
-    from app.communications.templates import render_template
-
     subject, body = render_template(
         subject="A better workflow for {company_name}",
         body=(
@@ -107,8 +94,6 @@ def test_renders_template_subject_and_body():
 
 
 def test_rendering_rejects_missing_placeholder_values():
-    from app.communications.templates import render_template
-
     with pytest.raises(
         ValueError,
         match=r"Missing template values: area, rep_name",
@@ -128,8 +113,6 @@ def test_rendering_rejects_missing_placeholder_values():
 
 
 def test_cold_template_requires_sales_rep_identity():
-    from app.communications.templates import validate_template
-
     with pytest.raises(
         ValueError,
         match=r"Missing required placeholders: rep_email, rep_name",
@@ -139,3 +122,13 @@ def test_cold_template_requires_sales_rep_identity():
             subject="A better workflow for {company_name}",
             body="Hi {contact_name}, we support teams in {area}.",
         )
+
+
+def test_newsletter_does_not_require_sales_rep_identity():
+    placeholders = validate_template(
+        template_type="newsletter",
+        subject="Nyumba Zetu market update",
+        body="Latest property insights for teams in {area}.",
+    )
+
+    assert placeholders == {"area"}

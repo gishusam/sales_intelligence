@@ -1,15 +1,32 @@
-"""Template parsing utilities for Communications."""
+"""Template parsing, validation, and rendering utilities."""
 
 import re
+from collections.abc import Mapping
 
 
 _PLACEHOLDER_PATTERN = re.compile(
     r"(?<!{){([A-Za-z_][A-Za-z0-9_]*)}(?!})"
 )
 
+ALLOWED_PLACEHOLDERS = frozenset(
+    {
+        "contact_name",
+        "company_name",
+        "area",
+        "rep_name",
+        "rep_email",
+    }
+)
+
+REQUIRED_PLACEHOLDERS_BY_TYPE = {
+    "cold": frozenset({"rep_name", "rep_email"}),
+    "followup": frozenset({"rep_name", "rep_email"}),
+    "newsletter": frozenset(),
+}
+
 
 def extract_placeholders(*, subject: str, body: str) -> set[str]:
-    """Return unique placeholder names found in a template."""
+    """Return unique placeholder names found in a subject and body."""
 
     content = f"{subject}\n{body}"
     return set(_PLACEHOLDER_PATTERN.findall(content))
@@ -19,19 +36,23 @@ def validate_template_placeholders(
     *,
     subject: str,
     body: str,
-    allowed_placeholders: set[str],
-    required_placeholders: set[str] | None = None,
+    allowed_placeholders: set[str] | frozenset[str],
+    required_placeholders: set[str] | frozenset[str] | None = None,
 ) -> set[str]:
-    """Validate supported and required template placeholders."""
+    """Validate supported and mandatory placeholders."""
 
-    placeholders = extract_placeholders(subject=subject, body=body)
-    unsupported = placeholders - allowed_placeholders
+    placeholders = extract_placeholders(
+        subject=subject,
+        body=body,
+    )
+
+    unsupported = placeholders - set(allowed_placeholders)
 
     if unsupported:
         names = ", ".join(sorted(unsupported))
         raise ValueError(f"Unsupported placeholders: {names}")
 
-    required = required_placeholders or set()
+    required = set(required_placeholders or ())
     missing = required - placeholders
 
     if missing:
@@ -41,19 +62,43 @@ def validate_template_placeholders(
     return placeholders
 
 
+def validate_template(
+    *,
+    template_type: str,
+    subject: str,
+    body: str,
+) -> set[str]:
+    """Validate a template against its communication-type policy."""
+
+    if template_type not in REQUIRED_PLACEHOLDERS_BY_TYPE:
+        raise ValueError(
+            f"Unsupported template type: {template_type}"
+        )
+
+    return validate_template_placeholders(
+        subject=subject,
+        body=body,
+        allowed_placeholders=ALLOWED_PLACEHOLDERS,
+        required_placeholders=REQUIRED_PLACEHOLDERS_BY_TYPE[
+            template_type
+        ],
+    )
+
+
 def render_template(
     *,
     subject: str,
     body: str,
-    values: dict[str, object],
+    values: Mapping[str, object],
 ) -> tuple[str, str]:
-    """Render placeholder values into a template subject and body."""
+    """Render a validated template with personalization values."""
 
     placeholders = extract_placeholders(
         subject=subject,
         body=body,
     )
-    missing = placeholders - values.keys()
+
+    missing = placeholders - set(values)
 
     if missing:
         names = ", ".join(sorted(missing))
@@ -63,43 +108,7 @@ def render_template(
         placeholder = match.group(1)
         return str(values[placeholder])
 
-    rendered_subject = _PLACEHOLDER_PATTERN.sub(replace, subject)
-    rendered_body = _PLACEHOLDER_PATTERN.sub(replace, body)
-
-    return rendered_subject, rendered_body
-
-
-ALLOWED_PLACEHOLDERS = {
-    "contact_name",
-    "company_name",
-    "area",
-    "rep_name",
-    "rep_email",
-}
-
-REQUIRED_PLACEHOLDERS_BY_TYPE = {
-    "cold": {"rep_name", "rep_email"},
-    "followup": {"rep_name", "rep_email"},
-    "newsletter": set(),
-}
-
-
-def validate_template(
-    *,
-    template_type: str,
-    subject: str,
-    body: str,
-) -> set[str]:
-    """Validate template content against its communication type."""
-
-    if template_type not in REQUIRED_PLACEHOLDERS_BY_TYPE:
-        raise ValueError(f"Unsupported template type: {template_type}")
-
-    return validate_template_placeholders(
-        subject=subject,
-        body=body,
-        allowed_placeholders=ALLOWED_PLACEHOLDERS,
-        required_placeholders=REQUIRED_PLACEHOLDERS_BY_TYPE[
-            template_type
-        ],
+    return (
+        _PLACEHOLDER_PATTERN.sub(replace, subject),
+        _PLACEHOLDER_PATTERN.sub(replace, body),
     )
