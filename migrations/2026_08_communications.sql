@@ -877,3 +877,125 @@ CREATE INDEX IF NOT EXISTS
     idx_email_messages_provider_message_id
     ON email_messages (provider_message_id)
     WHERE provider_message_id IS NOT NULL;
+
+-- News ingestion and AI-assisted drafting
+ALTER TABLE newsletter_sources
+    ADD COLUMN IF NOT EXISTS name TEXT,
+    ADD COLUMN IF NOT EXISTS source_type TEXT,
+    ADD COLUMN IF NOT EXISTS url TEXT,
+    ADD COLUMN IF NOT EXISTS publisher TEXT,
+    ADD COLUMN IF NOT EXISTS trust_tier TEXT
+        NOT NULL DEFAULT 'review_required',
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN
+        NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS created_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS updated_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ
+        NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
+        NOT NULL DEFAULT NOW();
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_sources_url
+    ON newsletter_sources (LOWER(url))
+    WHERE url IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS newsletter_articles (
+    id BIGSERIAL PRIMARY KEY,
+    source_id BIGINT NOT NULL
+        REFERENCES newsletter_sources(id) ON DELETE CASCADE,
+    external_id TEXT,
+    title TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    publisher TEXT NOT NULL,
+    published_at TIMESTAMPTZ NOT NULL,
+    summary TEXT,
+    content_text TEXT,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_articles_fingerprint
+    ON newsletter_articles (fingerprint);
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_articles_canonical_url
+    ON newsletter_articles (LOWER(canonical_url));
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_articles_source_external
+    ON newsletter_articles (source_id, external_id)
+    WHERE external_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_newsletter_articles_review_queue
+    ON newsletter_articles (
+        status,
+        published_at DESC
+    );
+
+CREATE TABLE IF NOT EXISTS newsletter_ingestion_runs (
+    id BIGSERIAL PRIMARY KEY,
+    source_id BIGINT NOT NULL
+        REFERENCES newsletter_sources(id) ON DELETE CASCADE,
+    received_count INTEGER NOT NULL DEFAULT 0,
+    created_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS newsletter_generation_runs (
+    id BIGSERIAL PRIMARY KEY,
+    article_ids BIGINT[] NOT NULL DEFAULT '{}',
+    newsletter_id BIGINT
+        REFERENCES newsletter_drafts(id) ON DELETE SET NULL,
+    generator_model TEXT NOT NULL,
+    prompt_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    requested_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE newsletter_drafts
+    ADD COLUMN IF NOT EXISTS generation_run_id BIGINT
+        REFERENCES newsletter_generation_runs(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS source_type TEXT
+        NOT NULL DEFAULT 'manual';
+
+CREATE TABLE IF NOT EXISTS newsletter_draft_articles (
+    newsletter_id BIGINT NOT NULL
+        REFERENCES newsletter_drafts(id) ON DELETE CASCADE,
+    article_id BIGINT NOT NULL
+        REFERENCES newsletter_articles(id) ON DELETE RESTRICT,
+    position INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (newsletter_id, article_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_draft_articles
+    ON newsletter_draft_articles (
+        newsletter_id,
+        article_id
+    );
+
+CREATE INDEX IF NOT EXISTS
+    idx_newsletter_generation_runs_status
+    ON newsletter_generation_runs (
+        status,
+        created_at DESC
+    );

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     COMMUNICATIONS_MAX_ATTEMPTS: int = 5
     NEWSLETTER_UNSUBSCRIBE_SECRET: str = ""
     EMAIL_WEBHOOK_SECRET: str = ""
+    NEWSLETTER_AI_MODEL: str = "gemini-2.5-flash"
+    NEWSLETTER_AI_TIMEOUT_SECONDS: int = 45
     PUBLIC_API_BASE_URL: str = "http://localhost:8000"
     COMMUNICATIONS_LOCK_TIMEOUT_MINUTES: int = 15
     ALLOWED_ORIGINS: str = (
