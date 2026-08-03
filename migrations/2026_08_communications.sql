@@ -665,3 +665,72 @@ CREATE INDEX IF NOT EXISTS
         locked_at
     )
     WHERE status = 'processing';
+
+-- Conservative follow-up automation foundation
+ALTER TABLE automation_rules
+    ADD COLUMN IF NOT EXISTS name TEXT,
+    ADD COLUMN IF NOT EXISTS trigger_type TEXT
+        NOT NULL DEFAULT 'inactivity_followup',
+    ADD COLUMN IF NOT EXISTS template_id BIGINT
+        REFERENCES communication_templates(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS sender_identity_id BIGINT
+        REFERENCES sender_identities(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS inactivity_days INTEGER NOT NULL DEFAULT 7,
+    ADD COLUMN IF NOT EXISTS max_drafts_per_lead INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS created_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS updated_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE automation_executions
+    ADD COLUMN IF NOT EXISTS rule_id BIGINT
+        REFERENCES automation_rules(id) ON DELETE CASCADE,
+    ADD COLUMN IF NOT EXISTS lead_id INTEGER
+        REFERENCES leads(id) ON DELETE CASCADE,
+    ADD COLUMN IF NOT EXISTS email_message_id BIGINT
+        REFERENCES email_messages(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT,
+    ADD COLUMN IF NOT EXISTS reason TEXT,
+    ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS automation_rule_id BIGINT
+        REFERENCES automation_rules(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS lead_communication_state (
+    lead_id INTEGER PRIMARY KEY
+        REFERENCES leads(id) ON DELETE CASCADE,
+    reply_received_at TIMESTAMPTZ,
+    automation_paused BOOLEAN NOT NULL DEFAULT FALSE,
+    pause_reason TEXT,
+    updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_automation_executions_idempotency_key
+    ON automation_executions (idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_automation_rules_active
+    ON automation_rules (is_active, id)
+    WHERE is_active = TRUE;
+
+CREATE INDEX IF NOT EXISTS
+    idx_automation_executions_rule_created
+    ON automation_executions (rule_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_messages_automation_rule
+    ON email_messages (
+        automation_rule_id,
+        lead_id,
+        status
+    )
+    WHERE message_type = 'automation';
