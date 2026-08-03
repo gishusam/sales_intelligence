@@ -734,3 +734,61 @@ CREATE INDEX IF NOT EXISTS
         status
     )
     WHERE message_type = 'automation';
+
+-- Newsletter drafting and audience foundation
+ALTER TABLE newsletter_drafts
+    ADD COLUMN IF NOT EXISTS name TEXT,
+    ADD COLUMN IF NOT EXISTS subject TEXT,
+    ADD COLUMN IF NOT EXISTS preview_text TEXT,
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft',
+    ADD COLUMN IF NOT EXISTS sender_identity_id BIGINT
+        REFERENCES sender_identities(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS blocks JSONB NOT NULL DEFAULT '[]'::JSONB,
+    ADD COLUMN IF NOT EXISTS body_text TEXT,
+    ADD COLUMN IF NOT EXISTS body_html TEXT,
+    ADD COLUMN IF NOT EXISTS created_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS updated_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS reviewed_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS approved_by INTEGER
+        REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS newsletter_recipients (
+    id BIGSERIAL PRIMARY KEY,
+    newsletter_id BIGINT NOT NULL
+        REFERENCES newsletter_drafts(id) ON DELETE CASCADE,
+    lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    recipient_email TEXT NOT NULL,
+    recipient_name TEXT,
+    company_name_snapshot TEXT,
+    status TEXT NOT NULL DEFAULT 'eligible',
+    suppression_reason TEXT,
+    added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS newsletter_id BIGINT
+        REFERENCES newsletter_drafts(id) ON DELETE SET NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_recipients_email
+    ON newsletter_recipients (
+        newsletter_id,
+        LOWER(recipient_email)
+    );
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_newsletter_recipients_lead
+    ON newsletter_recipients (
+        newsletter_id,
+        lead_id
+    )
+    WHERE lead_id IS NOT NULL;

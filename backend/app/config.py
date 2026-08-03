@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     COMMUNICATIONS_WORKER_TOKEN: str = ""
     COMMUNICATIONS_WORKER_BATCH_SIZE: int = 25
     COMMUNICATIONS_MAX_ATTEMPTS: int = 5
+    NEWSLETTER_UNSUBSCRIBE_SECRET: str = ""
+    PUBLIC_API_BASE_URL: str = "http://localhost:8000"
     COMMUNICATIONS_LOCK_TIMEOUT_MINUTES: int = 15
     ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"
