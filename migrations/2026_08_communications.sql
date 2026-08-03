@@ -573,3 +573,57 @@ CREATE INDEX IF NOT EXISTS
 CREATE INDEX IF NOT EXISTS
     idx_campaign_recipients_status
     ON campaign_recipients (campaign_id, status);
+
+-- Campaign lifecycle and execution preflight
+ALTER TABLE campaigns
+    ADD COLUMN IF NOT EXISTS prepared_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS paused_from_status TEXT;
+
+ALTER TABLE campaign_steps
+    ADD COLUMN IF NOT EXISTS snapshot_subject TEXT,
+    ADD COLUMN IF NOT EXISTS snapshot_body_text TEXT,
+    ADD COLUMN IF NOT EXISTS snapshot_body_html TEXT,
+    ADD COLUMN IF NOT EXISTS snapshot_template_version INTEGER;
+
+ALTER TABLE campaign_recipients
+    ADD COLUMN IF NOT EXISTS company_name_snapshot TEXT,
+    ADD COLUMN IF NOT EXISTS area_snapshot TEXT,
+    ADD COLUMN IF NOT EXISTS rep_name_snapshot TEXT,
+    ADD COLUMN IF NOT EXISTS rep_email_snapshot TEXT,
+    ADD COLUMN IF NOT EXISTS next_step_order INTEGER,
+    ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+
+ALTER TABLE email_messages
+    ADD COLUMN IF NOT EXISTS campaign_id BIGINT
+        REFERENCES campaigns(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS campaign_recipient_id BIGINT
+        REFERENCES campaign_recipients(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS campaign_step_id BIGINT
+        REFERENCES campaign_steps(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+    uq_email_messages_campaign_recipient_step
+    ON email_messages (
+        campaign_recipient_id,
+        campaign_step_id
+    )
+    WHERE
+        campaign_recipient_id IS NOT NULL
+        AND campaign_step_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS
+    idx_email_messages_due_campaign_jobs
+    ON email_messages (
+        status,
+        scheduled_for
+    )
+    WHERE
+        message_type = 'campaign'
+        AND status = 'queued';
