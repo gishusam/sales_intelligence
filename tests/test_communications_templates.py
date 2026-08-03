@@ -54,3 +54,27 @@ def test_rejects_unsupported_placeholders():
                 "rep_email",
             },
         )
+
+
+def test_rejects_missing_required_placeholders():
+    from app.communications.templates import validate_template_placeholders
+
+    with pytest.raises(
+        ValueError,
+        match=r"Missing required placeholders: rep_email, rep_name",
+    ):
+        validate_template_placeholders(
+            subject="A better workflow for {company_name}",
+            body="Hello {contact_name}",
+            allowed_placeholders={
+                "contact_name",
+                "company_name",
+                "area",
+                "rep_name",
+                "rep_email",
+            },
+            required_placeholders={
+                "rep_name",
+                "rep_email",
+            },
+        )

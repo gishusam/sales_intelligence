@@ -20,8 +20,9 @@ def validate_template_placeholders(
     subject: str,
     body: str,
     allowed_placeholders: set[str],
+    required_placeholders: set[str] | None = None,
 ) -> set[str]:
-    """Validate that a template contains only supported placeholders."""
+    """Validate supported and required template placeholders."""
 
     placeholders = extract_placeholders(subject=subject, body=body)
     unsupported = placeholders - allowed_placeholders
@@ -29,5 +30,12 @@ def validate_template_placeholders(
     if unsupported:
         names = ", ".join(sorted(unsupported))
         raise ValueError(f"Unsupported placeholders: {names}")
+
+    required = required_placeholders or set()
+    missing = required - placeholders
+
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise ValueError(f"Missing required placeholders: {names}")
 
     return placeholders
