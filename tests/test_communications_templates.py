@@ -125,3 +125,17 @@ def test_rendering_rejects_missing_placeholder_values():
                 "contact_name": "Alice",
             },
         )
+
+
+def test_cold_template_requires_sales_rep_identity():
+    from app.communications.templates import validate_template
+
+    with pytest.raises(
+        ValueError,
+        match=r"Missing required placeholders: rep_email, rep_name",
+    ):
+        validate_template(
+            template_type="cold",
+            subject="A better workflow for {company_name}",
+            body="Hi {contact_name}, we support teams in {area}.",
+        )

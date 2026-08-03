@@ -67,3 +67,39 @@ def render_template(
     rendered_body = _PLACEHOLDER_PATTERN.sub(replace, body)
 
     return rendered_subject, rendered_body
+
+
+ALLOWED_PLACEHOLDERS = {
+    "contact_name",
+    "company_name",
+    "area",
+    "rep_name",
+    "rep_email",
+}
+
+REQUIRED_PLACEHOLDERS_BY_TYPE = {
+    "cold": {"rep_name", "rep_email"},
+    "followup": {"rep_name", "rep_email"},
+    "newsletter": set(),
+}
+
+
+def validate_template(
+    *,
+    template_type: str,
+    subject: str,
+    body: str,
+) -> set[str]:
+    """Validate template content against its communication type."""
+
+    if template_type not in REQUIRED_PLACEHOLDERS_BY_TYPE:
+        raise ValueError(f"Unsupported template type: {template_type}")
+
+    return validate_template_placeholders(
+        subject=subject,
+        body=body,
+        allowed_placeholders=ALLOWED_PLACEHOLDERS,
+        required_placeholders=REQUIRED_PLACEHOLDERS_BY_TYPE[
+            template_type
+        ],
+    )
