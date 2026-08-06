@@ -1,0 +1,898 @@
+"""
+communications.py — Bulk email and newsletter system
+Powered by Resend for reliable delivery and tracking.
+
+Endpoints:
+    POST /api/comms/campaigns              — create campaign
+    GET  /api/comms/campaigns              — list campaigns
+    GET  /api/comms/campaigns/{id}         — campaign detail
+    POST /api/comms/campaigns/{id}/send    — send campaign
+    GET  /api/comms/campaigns/{id}/recipients — recipient list
+
+    POST /api/comms/lists                  — create mailing list
+    GET  /api/comms/lists                  — list all mailing lists
+    GET  /api/comms/lists/{id}             — list detail + contacts
+    POST /api/comms/lists/{id}/contacts    — add contacts
+    DELETE /api/comms/lists/{id}/contacts/{email} — remove contact
+
+    POST /api/comms/unsubscribe            — unsubscribe email
+    GET  /api/comms/preview                — preview campaign email
+"""
+
+import os
+import logging
+import httpx
+import re
+from datetime import datetime, timezone
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.auth import get_current_user, CurrentUser
+
+router = APIRouter(prefix="/api/comms", tags=["communications"])
+logger = logging.getLogger(__name__)
+
+RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")
+RESEND_URL      = "https://api.resend.com/emails"
+TEST_FROM_EMAIL = os.getenv("COMMS_FROM_EMAIL", "onboarding@resend.dev")
+TEST_FROM_NAME  = os.getenv("COMMS_FROM_NAME", "Nyumba Zetu")
+APP_URL         = os.getenv("APP_URL", "https://nyumba-lead-hub.vercel.app")
+
+
+# ── Email validation ──────────────────────────────────────────────
+
+def is_valid_email(email: str) -> bool:
+    pattern = r'^[\w\.\-]+@[\w\.\-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email.strip()))
+
+
+def is_unsubscribed(db: Session, email: str) -> bool:
+    row = db.execute(
+        text("SELECT 1 FROM unsubscribes WHERE email = :email"),
+        {"email": email.lower().strip()}
+    ).fetchone()
+    return row is not None
+
+
+# ── Resend sender ─────────────────────────────────────────────────
+
+async def send_via_resend(
+    to_email:    str,
+    to_name:     str,
+    from_email:  str,
+    from_name:   str,
+    subject:     str,
+    body:        str,
+    reply_to:    Optional[str] = None,
+) -> dict:
+    """Send a single email via Resend API."""
+    if not RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY not set — mock sending")
+        return {"id": f"mock_{to_email}", "mock": True}
+
+    payload = {
+        "from":    f"{from_name} <{from_email}>",
+        "to":      [f"{to_name} <{to_email}>" if to_name else to_email],
+        "subject": subject,
+        "text":    body,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+
+    # Add unsubscribe link to body
+    unsubscribe_url = f"{APP_URL}/unsubscribe?email={to_email}"
+    payload["text"] += f"\n\n---\nTo unsubscribe, visit: {unsubscribe_url}"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            RESEND_URL,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type":  "application/json",
+            },
+            json=payload,
+        )
+
+    if resp.status_code in (200, 201):
+        return resp.json()
+    else:
+        raise Exception(f"Resend error {resp.status_code}: {resp.text[:200]}")
+
+
+def personalise(template: str, context: dict) -> str:
+    """Replace placeholders in template body."""
+    for key, val in context.items():
+        template = template.replace(f"{{{key}}}", val or "")
+    return template
+
+
+# ── Schemas ───────────────────────────────────────────────────────
+
+class CampaignCreate(BaseModel):
+    name:            str
+    subject:         str
+    body:            str
+    sender_name:     str = "Nyumba Zetu"
+    sender_email:    str = "onboarding@resend.dev"
+    reply_to:        Optional[str] = None
+    recipient_type:  str  # leads / mailing_list / csv_upload
+    mailing_list_id: Optional[int] = None
+    recipient_filter: Optional[dict] = None
+    # e.g. {"lead_type": "agency", "area": "Kilimani", "status": "new"}
+
+
+class MailingListCreate(BaseModel):
+    name:        str
+    description: Optional[str] = None
+
+
+class ContactAdd(BaseModel):
+    contacts: List[dict]
+    # each: { "email": "...", "name": "..." }
+
+
+class UnsubscribeRequest(BaseModel):
+    email: str
+    reason: Optional[str] = None
+
+
+# ── Mailing list endpoints ────────────────────────────────────────
+
+@router.post("/lists")
+def create_list(
+    body: MailingListCreate,
+    db:   Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    row = db.execute(text("""
+        INSERT INTO mailing_lists (name, description, created_by)
+        VALUES (:name, :description, :created_by)
+        RETURNING id, name
+    """), {
+        "name":        body.name,
+        "description": body.description,
+        "created_by":  user.name,
+    }).fetchone()
+    db.commit()
+    return {"id": row.id, "name": row.name, "message": "Mailing list created ✅"}
+
+
+@router.get("/lists")
+def get_lists(
+    db:   Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    rows = db.execute(text("""
+        SELECT m.id, m.name, m.description, m.created_by, m.created_at,
+               COUNT(c.id) FILTER (WHERE c.unsubscribed = FALSE) AS active_contacts,
+               COUNT(c.id) AS total_contacts
+        FROM mailing_lists m
+        LEFT JOIN mailing_list_contacts c ON c.list_id = m.id
+        GROUP BY m.id
+        ORDER BY m.created_at DESC
+    """)).fetchall()
+
+    return [
+        {
+            "id":              r.id,
+            "name":            r.name,
+            "description":     r.description,
+            "created_by":      r.created_by,
+            "active_contacts": r.active_contacts,
+            "total_contacts":  r.total_contacts,
+            "created_at":      r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/lists/{list_id}")
+def get_list(
+    list_id: int,
+    db:      Session = Depends(get_db),
+    user:    CurrentUser = Depends(get_current_user),
+):
+    ml = db.execute(text("""
+        SELECT id, name, description, created_by, created_at
+        FROM mailing_lists WHERE id = :id
+    """), {"id": list_id}).fetchone()
+
+    if not ml:
+        raise HTTPException(404, "Mailing list not found")
+
+    contacts = db.execute(text("""
+        SELECT email, name, source, unsubscribed, created_at
+        FROM mailing_list_contacts
+        WHERE list_id = :list_id
+        ORDER BY created_at DESC
+    """), {"list_id": list_id}).fetchall()
+
+    return {
+        "id":          ml.id,
+        "name":        ml.name,
+        "description": ml.description,
+        "created_by":  ml.created_by,
+        "contacts": [
+            {
+                "email":        c.email,
+                "name":         c.name,
+                "source":       c.source,
+                "unsubscribed": c.unsubscribed,
+                "created_at":   c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in contacts
+        ],
+    }
+
+
+@router.post("/lists/{list_id}/contacts")
+def add_contacts(
+    list_id: int,
+    body:    ContactAdd,
+    db:      Session = Depends(get_db),
+    user:    CurrentUser = Depends(get_current_user),
+):
+    """Add contacts to a mailing list — validates and deduplicates."""
+    added = 0
+    skipped = 0
+    invalid = []
+
+    for c in body.contacts:
+        email = str(c.get("email", "")).strip().lower()
+        name  = str(c.get("name", "")).strip() or None
+
+        if not is_valid_email(email):
+            invalid.append(email)
+            continue
+
+        try:
+            db.execute(text("""
+                INSERT INTO mailing_list_contacts (list_id, email, name, source)
+                VALUES (:list_id, :email, :name, 'manual')
+                ON CONFLICT (list_id, email) DO NOTHING
+            """), {"list_id": list_id, "email": email, "name": name})
+            added += 1
+        except Exception:
+            skipped += 1
+
+    db.commit()
+    return {
+        "added":   added,
+        "skipped": skipped,
+        "invalid": invalid,
+        "message": f"{added} contacts added",
+    }
+
+
+@router.post("/lists/{list_id}/import-leads")
+def import_leads_to_list(
+    list_id:     int,
+    lead_type:   Optional[str] = None,
+    area:        Optional[str] = None,
+    status:      Optional[str] = None,
+    db:          Session = Depends(get_db),
+    user:        CurrentUser = Depends(get_current_user),
+):
+    """Import leads with emails directly into a mailing list."""
+    filters = ["email IS NOT NULL", "email != ''"]
+    params  = {"list_id": list_id}
+
+    if lead_type:
+        filters.append("lead_type = :lead_type")
+        params["lead_type"] = lead_type
+    if area:
+        filters.append("area ILIKE :area")
+        params["area"] = f"%{area}%"
+    if status:
+        filters.append("status = :status")
+        params["status"] = status
+
+    where = " AND ".join(filters)
+
+    leads = db.execute(text(f"""
+        SELECT id, name, email FROM leads
+        WHERE {where}
+    """), params).fetchall()
+
+    added = 0
+    for lead in leads:
+        email = lead.email.strip().lower()
+        if not is_valid_email(email):
+            continue
+        try:
+            db.execute(text("""
+                INSERT INTO mailing_list_contacts
+                    (list_id, email, name, lead_id, source)
+                VALUES (:list_id, :email, :name, :lead_id, 'leads')
+                ON CONFLICT (list_id, email) DO NOTHING
+            """), {
+                "list_id": list_id,
+                "email":   email,
+                "name":    lead.name,
+                "lead_id": lead.id,
+            })
+            added += 1
+        except Exception:
+            pass
+
+    db.commit()
+    return {
+        "added":   added,
+        "total":   len(leads),
+        "message": f"{added} leads imported to mailing list",
+    }
+
+
+# ── Campaign endpoints ─────────────────────────────────────────────
+
+@router.post("/campaigns")
+def create_campaign(
+    body: CampaignCreate,
+    db:   Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Create a draft campaign."""
+    if body.recipient_type not in ("leads", "mailing_list", "csv_upload"):
+        raise HTTPException(400, "recipient_type must be leads, mailing_list, or csv_upload")
+
+    if body.recipient_type == "mailing_list" and not body.mailing_list_id:
+        raise HTTPException(400, "mailing_list_id required for mailing_list recipient type")
+
+    row = db.execute(text("""
+        INSERT INTO campaigns (
+            name, subject, body, sender_name, sender_email,
+            reply_to, recipient_type, mailing_list_id,
+            recipient_filter, status, created_by
+        ) VALUES (
+            :name, :subject, :body, :sender_name, :sender_email,
+            :reply_to, :recipient_type, :mailing_list_id,
+            :recipient_filter, 'draft', :created_by
+        )
+        RETURNING id, name
+    """), {
+        "name":             body.name,
+        "subject":          body.subject,
+        "body":             body.body,
+        "sender_name":      body.sender_name,
+        "sender_email":     body.sender_email,
+        "reply_to":         body.reply_to,
+        "recipient_type":   body.recipient_type,
+        "mailing_list_id":  body.mailing_list_id,
+        "recipient_filter": str(body.recipient_filter) if body.recipient_filter else None,
+        "created_by":       user.name,
+    }).fetchone()
+    db.commit()
+
+    return {"id": row.id, "name": row.name, "status": "draft"}
+
+
+@router.get("/campaigns")
+def get_campaigns(
+    db:   Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    rows = db.execute(text("""
+        SELECT id, name, subject, status, recipient_type,
+               sender_email, total_recipients, sent_count,
+               failed_count, created_by, created_at, finished_at
+        FROM campaigns
+        ORDER BY created_at DESC
+        LIMIT 50
+    """)).fetchall()
+
+    return [
+        {
+            "id":               r.id,
+            "name":             r.name,
+            "subject":          r.subject,
+            "status":           r.status,
+            "recipient_type":   r.recipient_type,
+            "sender_email":     r.sender_email,
+            "total_recipients": r.total_recipients,
+            "sent_count":       r.sent_count,
+            "failed_count":     r.failed_count,
+            "created_by":       r.created_by,
+            "created_at":       r.created_at.isoformat() if r.created_at else None,
+            "finished_at":      r.finished_at.isoformat() if r.finished_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/campaigns/{campaign_id}")
+def get_campaign(
+    campaign_id: int,
+    db:          Session = Depends(get_db),
+    user:        CurrentUser = Depends(get_current_user),
+):
+    row = db.execute(text("""
+        SELECT * FROM campaigns WHERE id = :id
+    """), {"id": campaign_id}).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Campaign not found")
+
+    # Recipient stats
+    stats = db.execute(text("""
+        SELECT status, COUNT(*) as count
+        FROM campaign_recipients
+        WHERE campaign_id = :id
+        GROUP BY status
+    """), {"id": campaign_id}).fetchall()
+
+    return {
+        "id":               row.id,
+        "name":             row.name,
+        "subject":          row.subject,
+        "body":             row.body,
+        "sender_name":      row.sender_name,
+        "sender_email":     row.sender_email,
+        "reply_to":         row.reply_to,
+        "status":           row.status,
+        "recipient_type":   row.recipient_type,
+        "total_recipients": row.total_recipients,
+        "sent_count":       row.sent_count,
+        "failed_count":     row.failed_count,
+        "created_by":       row.created_by,
+        "created_at":       row.created_at.isoformat() if row.created_at else None,
+        "finished_at":      row.finished_at.isoformat() if row.finished_at else None,
+        "recipient_stats":  {r.status: r.count for r in stats},
+    }
+
+
+def _resolve_recipients(campaign, db: Session) -> List[dict]:
+    """
+    Resolve recipients based on campaign type.
+    Returns list of {email, name, lead_id}.
+    Removes unsubscribed and invalid emails.
+    """
+    recipients = []
+
+    if campaign.recipient_type == "mailing_list":
+        rows = db.execute(text("""
+            SELECT email, name, lead_id FROM mailing_list_contacts
+            WHERE list_id = :list_id AND unsubscribed = FALSE
+        """), {"list_id": campaign.mailing_list_id}).fetchall()
+        recipients = [{"email": r.email, "name": r.name, "lead_id": r.lead_id}
+                      for r in rows]
+
+    elif campaign.recipient_type == "leads":
+        # Use recipient_filter if set
+        filters = ["email IS NOT NULL", "email != ''"]
+        params  = {}
+
+        if campaign.recipient_filter:
+            import json
+            try:
+                rf = json.loads(campaign.recipient_filter) \
+                    if isinstance(campaign.recipient_filter, str) \
+                    else campaign.recipient_filter
+                if rf.get("lead_type"):
+                    filters.append("lead_type = :lead_type")
+                    params["lead_type"] = rf["lead_type"]
+                if rf.get("area"):
+                    filters.append("area ILIKE :area")
+                    params["area"] = f"%{rf['area']}%"
+                if rf.get("status"):
+                    filters.append("status = :status")
+                    params["status"] = rf["status"]
+                if rf.get("ai_score"):
+                    filters.append("ai_score = :ai_score")
+                    params["ai_score"] = rf["ai_score"]
+            except Exception:
+                pass
+
+        where = " AND ".join(filters)
+        rows = db.execute(text(f"""
+            SELECT id, name, email FROM leads WHERE {where}
+        """), params).fetchall()
+        recipients = [{"email": r.email, "name": r.name, "lead_id": r.id}
+                      for r in rows]
+
+    elif campaign.recipient_type == "csv_upload":
+        rows = db.execute(text("""
+            SELECT email, name, lead_id FROM campaign_recipients
+            WHERE campaign_id = :id AND status = 'pending'
+        """), {"id": campaign.id}).fetchall()
+        recipients = [{"email": r.email, "name": r.name, "lead_id": r.lead_id}
+                      for r in rows]
+
+    # Remove unsubscribed and invalid
+    clean = []
+    seen  = set()
+    for r in recipients:
+        email = r["email"].strip().lower()
+        if not is_valid_email(email):
+            continue
+        if email in seen:
+            continue
+        if is_unsubscribed(db, email):
+            continue
+        seen.add(email)
+        r["email"] = email
+        clean.append(r)
+
+    return clean
+
+
+async def _send_campaign_emails(campaign_id: int, db_url: str):
+    """Background task — sends emails to all recipients."""
+    import psycopg2
+
+    conn = psycopg2.connect(db_url)
+    cur  = conn.cursor()
+
+    try:
+        # Fetch campaign
+        cur.execute("SELECT * FROM campaigns WHERE id = %s", (campaign_id,))
+        cols = [d[0] for d in cur.description]
+        row  = cur.fetchone()
+        if not row:
+            return
+
+        campaign = dict(zip(cols, row))
+
+        # Update status to sending
+        cur.execute("""
+            UPDATE campaigns SET status = 'sending', started_at = NOW()
+            WHERE id = %s
+        """, (campaign_id,))
+        conn.commit()
+
+        # Get recipients from campaign_recipients table
+        cur.execute("""
+            SELECT email, name, lead_id FROM campaign_recipients
+            WHERE campaign_id = %s AND status = 'pending'
+        """, (campaign_id,))
+        recipients = [
+            {"email": r[0], "name": r[1], "lead_id": r[2]}
+            for r in cur.fetchall()
+        ]
+
+        sent_count   = 0
+        failed_count = 0
+
+        for r in recipients:
+            context = {
+                "contact_name": r["name"] or "Property Manager",
+                "company_name": r["name"] or "your company",
+                "rep_name":     campaign["created_by"],
+                "rep_email":    campaign["sender_email"],
+                "area":         "",
+            }
+
+            personalised_body    = personalise(campaign["body"], context)
+            personalised_subject = personalise(campaign["subject"], context)
+
+            try:
+                result = await send_via_resend(
+                    to_email   = r["email"],
+                    to_name    = r["name"] or "",
+                    from_email = campaign["sender_email"],
+                    from_name  = campaign["sender_name"],
+                    subject    = personalised_subject,
+                    body       = personalised_body,
+                    reply_to   = campaign.get("reply_to"),
+                )
+
+                cur.execute("""
+                    UPDATE campaign_recipients SET
+                        status    = 'sent',
+                        resend_id = %s,
+                        sent_at   = NOW()
+                    WHERE campaign_id = %s AND email = %s
+                """, (result.get("id"), campaign_id, r["email"]))
+                sent_count += 1
+
+            except Exception as e:
+                cur.execute("""
+                    UPDATE campaign_recipients SET
+                        status = 'failed',
+                        error  = %s
+                    WHERE campaign_id = %s AND email = %s
+                """, (str(e)[:200], campaign_id, r["email"]))
+                failed_count += 1
+
+            conn.commit()
+
+        # Mark campaign complete
+        cur.execute("""
+            UPDATE campaigns SET
+                status       = 'sent',
+                finished_at  = NOW(),
+                sent_count   = %s,
+                failed_count = %s
+            WHERE id = %s
+        """, (sent_count, failed_count, campaign_id))
+        conn.commit()
+
+        logger.info(
+            f"Campaign {campaign_id} complete — "
+            f"sent:{sent_count} failed:{failed_count}"
+        )
+
+    except Exception as e:
+        logger.error(f"Campaign {campaign_id} failed: {e}")
+        cur.execute("""
+            UPDATE campaigns SET status = 'failed'
+            WHERE id = %s
+        """, (campaign_id,))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.post("/campaigns/{campaign_id}/send")
+async def send_campaign(
+    campaign_id:      int,
+    background_tasks: BackgroundTasks,
+    db:               Session = Depends(get_db),
+    user:             CurrentUser = Depends(get_current_user),
+):
+    """
+    Resolve recipients and kick off sending in background.
+    Returns immediately with recipient count.
+    """
+    campaign = db.execute(text("""
+        SELECT * FROM campaigns WHERE id = :id
+    """), {"id": campaign_id}).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if campaign.status not in ("draft", "failed"):
+        raise HTTPException(400, f"Cannot send campaign with status '{campaign.status}'")
+
+    # Resolve recipients
+    recipients = _resolve_recipients(campaign, db)
+    if not recipients:
+        raise HTTPException(400, "No valid recipients found")
+
+    # Save recipients to campaign_recipients
+    db.execute(text("""
+        DELETE FROM campaign_recipients WHERE campaign_id = :id
+    """), {"id": campaign_id})
+
+    for r in recipients:
+        db.execute(text("""
+            INSERT INTO campaign_recipients
+                (campaign_id, email, name, lead_id, status)
+            VALUES (:campaign_id, :email, :name, :lead_id, 'pending')
+            ON CONFLICT DO NOTHING
+        """), {
+            "campaign_id": campaign_id,
+            "email":       r["email"],
+            "name":        r.get("name"),
+            "lead_id":     r.get("lead_id"),
+        })
+
+    # Update total count
+    db.execute(text("""
+        UPDATE campaigns SET
+            total_recipients = :count,
+            status           = 'sending'
+        WHERE id = :id
+    """), {"count": len(recipients), "id": campaign_id})
+    db.commit()
+
+    # Get DB URL for background task
+    from app.config import settings
+    db_url = settings.database_url
+
+    # Send in background
+    background_tasks.add_task(
+        _send_campaign_emails, campaign_id, db_url
+    )
+
+    return {
+        "campaign_id":      campaign_id,
+        "total_recipients": len(recipients),
+        "status":           "sending",
+        "message": (
+            f"Sending to {len(recipients)} recipients in background. "
+            f"Poll GET /api/comms/campaigns/{campaign_id} for progress."
+        ),
+    }
+
+
+@router.get("/campaigns/{campaign_id}/recipients")
+def get_recipients(
+    campaign_id: int,
+    status:      Optional[str] = None,
+    page:        int = 1,
+    limit:       int = 50,
+    db:          Session = Depends(get_db),
+    user:        CurrentUser = Depends(get_current_user),
+):
+    """Recipient list with delivery status."""
+    filters = ["campaign_id = :campaign_id"]
+    params  = {"campaign_id": campaign_id}
+
+    if status:
+        filters.append("status = :status")
+        params["status"] = status
+
+    where  = " AND ".join(filters)
+    offset = (page - 1) * limit
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM campaign_recipients WHERE {where}"), params
+    ).scalar()
+
+    rows = db.execute(text(f"""
+        SELECT email, name, status, resend_id, sent_at, error, created_at
+        FROM campaign_recipients
+        WHERE {where}
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """), {**params, "limit": limit, "offset": offset}).fetchall()
+
+    return {
+        "total": total,
+        "page":  page,
+        "pages": -(-total // limit) if total else 0,
+        "data": [
+            {
+                "email":     r.email,
+                "name":      r.name,
+                "status":    r.status,
+                "resend_id": r.resend_id,
+                "sent_at":   r.sent_at.isoformat() if r.sent_at else None,
+                "error":     r.error,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/campaigns/{campaign_id}/upload-csv")
+async def upload_csv_recipients(
+    campaign_id: int,
+    file:        UploadFile = File(...),
+    db:          Session = Depends(get_db),
+    user:        CurrentUser = Depends(get_current_user),
+):
+    """Upload CSV/Excel file as recipients for a campaign."""
+    import io, csv
+    import openpyxl
+
+    content  = await file.read()
+    filename = file.filename.lower()
+
+    rows = []
+    if filename.endswith(".csv"):
+        try:
+            text_content = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text_content = content.decode("latin-1")
+
+        first_line = text_content.split("\n")[0]
+        delimiter  = "\t" if "\t" in first_line else ","
+        reader     = csv.DictReader(io.StringIO(text_content), delimiter=delimiter)
+        rows       = list(reader)
+
+    elif filename.endswith((".xlsx", ".xls")):
+        wb   = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+        ws   = wb.active
+        data = list(ws.iter_rows(values_only=True))
+        if data:
+            headers = [str(h).strip().lower() if h else "" for h in data[0]]
+            for row in data[1:]:
+                rows.append({headers[i]: str(cell).strip() if cell else ""
+                             for i, cell in enumerate(row)})
+    else:
+        raise HTTPException(400, "Only CSV or Excel files supported")
+
+    # Column aliases
+    EMAIL_COLS = ["email", "email address", "e-mail"]
+    NAME_COLS  = ["name", "company name", "apartment name/company name",
+                  "business name", "contact name"]
+
+    added   = 0
+    skipped = 0
+    invalid = []
+
+    for row in rows:
+        # Find email
+        email = ""
+        for col in EMAIL_COLS:
+            val = row.get(col, "").strip().lower()
+            if val:
+                email = val
+                break
+
+        # Find name
+        name = ""
+        for col in NAME_COLS:
+            val = row.get(col, "").strip()
+            if val:
+                name = val
+                break
+
+        if not email or not is_valid_email(email):
+            if email:
+                invalid.append(email)
+            continue
+
+        if is_unsubscribed(db, email):
+            skipped += 1
+            continue
+
+        try:
+            db.execute(text("""
+                INSERT INTO campaign_recipients
+                    (campaign_id, email, name, status)
+                VALUES (:campaign_id, :email, :name, 'pending')
+                ON CONFLICT DO NOTHING
+            """), {
+                "campaign_id": campaign_id,
+                "email":       email,
+                "name":        name or None,
+            })
+            added += 1
+        except Exception:
+            skipped += 1
+
+    db.commit()
+    return {
+        "added":   added,
+        "skipped": skipped,
+        "invalid": invalid,
+        "message": f"{added} recipients added from {filename}",
+    }
+
+
+# ── Unsubscribe ───────────────────────────────────────────────────
+
+@router.post("/unsubscribe")
+def unsubscribe(
+    body: UnsubscribeRequest,
+    db:   Session = Depends(get_db),
+):
+    """Global unsubscribe — no auth required."""
+    email = body.email.strip().lower()
+    if not is_valid_email(email):
+        raise HTTPException(400, "Invalid email address")
+
+    db.execute(text("""
+        INSERT INTO unsubscribes (email, reason)
+        VALUES (:email, :reason)
+        ON CONFLICT (email) DO NOTHING
+    """), {"email": email, "reason": body.reason})
+
+    # Also mark in mailing lists
+    db.execute(text("""
+        UPDATE mailing_list_contacts SET
+            unsubscribed    = TRUE,
+            unsubscribed_at = NOW()
+        WHERE email = :email
+    """), {"email": email})
+
+    db.commit()
+    return {"message": f"{email} has been unsubscribed successfully"}
+
+
+@router.get("/unsubscribes")
+def get_unsubscribes(
+    db:   Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    rows = db.execute(text("""
+        SELECT email, reason, unsubscribed_at
+        FROM unsubscribes
+        ORDER BY unsubscribed_at DESC
+        LIMIT 100
+    """)).fetchall()
+
+    return [
+        {
+            "email":            r.email,
+            "reason":           r.reason,
+            "unsubscribed_at":  r.unsubscribed_at.isoformat() if r.unsubscribed_at else None,
+        }
+        for r in rows
+    ]
