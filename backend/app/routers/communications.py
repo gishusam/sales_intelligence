@@ -36,11 +36,28 @@ from app.auth import get_current_user, CurrentUser
 router = APIRouter(prefix="/api/comms", tags=["communications"])
 logger = logging.getLogger(__name__)
 
-RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")
-RESEND_URL      = "https://api.resend.com/emails"
-TEST_FROM_EMAIL = os.getenv("COMMS_FROM_EMAIL", "onboarding@resend.dev")
-TEST_FROM_NAME  = os.getenv("COMMS_FROM_NAME", "Nyumba Zetu")
-APP_URL         = os.getenv("APP_URL", "https://nyumba-lead-hub.vercel.app")
+RESEND_URL = "https://api.resend.com/emails"
+
+def _get_resend_key() -> str:
+    try:
+        from app.config import settings
+        return getattr(settings, "RESEND_API_KEY", "") or os.getenv("RESEND_API_KEY", "")
+    except Exception:
+        return os.getenv("RESEND_API_KEY", "")
+
+def _get_comms_from_email() -> str:
+    try:
+        from app.config import settings
+        return getattr(settings, "COMMS_FROM_EMAIL", "") or os.getenv("COMMS_FROM_EMAIL", "onboarding@resend.dev")
+    except Exception:
+        return os.getenv("COMMS_FROM_EMAIL", "onboarding@resend.dev")
+
+def _get_app_url() -> str:
+    try:
+        from app.config import settings
+        return getattr(settings, "APP_URL", "") or os.getenv("APP_URL", "https://nyumba-lead-hub.vercel.app")
+    except Exception:
+        return os.getenv("APP_URL", "https://nyumba-lead-hub.vercel.app")
 
 
 # ── Email validation ──────────────────────────────────────────────
@@ -70,7 +87,10 @@ async def send_via_resend(
     reply_to:    Optional[str] = None,
 ) -> dict:
     """Send a single email via Resend API."""
-    if not RESEND_API_KEY:
+    api_key  = _get_resend_key()
+    app_url  = _get_app_url()
+
+    if not api_key:
         logger.warning("RESEND_API_KEY not set — mock sending")
         return {"id": f"mock_{to_email}", "mock": True}
 
@@ -84,14 +104,14 @@ async def send_via_resend(
         payload["reply_to"] = reply_to
 
     # Add unsubscribe link to body
-    unsubscribe_url = f"{APP_URL}/unsubscribe?email={to_email}"
+    unsubscribe_url = f"{app_url}/unsubscribe?email={to_email}"
     payload["text"] += f"\n\n---\nTo unsubscribe, visit: {unsubscribe_url}"
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             RESEND_URL,
             headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type":  "application/json",
             },
             json=payload,
