@@ -20,6 +20,7 @@ Endpoints:
 """
 
 import os
+import json
 import logging
 import httpx
 import re
@@ -37,6 +38,82 @@ router = APIRouter(prefix="/api/comms", tags=["communications"])
 logger = logging.getLogger(__name__)
 
 RESEND_URL = "https://api.resend.com/emails"
+
+RECIPIENT_FILTER_FIELDS = frozenset({
+    "area",
+    "lead_type",
+    "status",
+    "ai_score",
+})
+
+
+def _validate_recipient_filter(recipient_filter: dict) -> dict:
+    if not isinstance(recipient_filter, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign audience filter must be a JSON object",
+        )
+
+    unsupported = sorted(set(recipient_filter) - RECIPIENT_FILTER_FIELDS)
+    if unsupported:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported audience filter(s): "
+                + ", ".join(unsupported)
+            ),
+        )
+
+    clean = {}
+    for key, value in recipient_filter.items():
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audience filter '{key}' must be a string",
+            )
+
+        value = value.strip()
+        if value:
+            clean[key] = value
+
+    return clean
+
+
+def _serialize_recipient_filter(recipient_filter) -> Optional[str]:
+    if not recipient_filter:
+        return None
+
+    clean = _validate_recipient_filter(recipient_filter)
+    return json.dumps(clean) if clean else None
+
+
+def _parse_recipient_filter(recipient_filter) -> dict:
+    if not recipient_filter:
+        return {}
+
+    if isinstance(recipient_filter, dict):
+        parsed = recipient_filter
+    elif isinstance(recipient_filter, str):
+        try:
+            parsed = json.loads(recipient_filter)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Campaign audience filter is invalid JSON; "
+                    "review the campaign before sending"
+                ),
+            ) from exc
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign audience filter has an invalid format",
+        )
+
+    return _validate_recipient_filter(parsed)
+
 
 def _get_resend_key() -> str:
     try:
@@ -387,7 +464,7 @@ def create_campaign(
         "reply_to":         body.reply_to,
         "recipient_type":   body.recipient_type,
         "mailing_list_id":  body.mailing_list_id,
-        "recipient_filter": str(body.recipient_filter) if body.recipient_filter else None,
+        "recipient_filter": _serialize_recipient_filter(body.recipient_filter),
         "created_by":       user.name,
     }).fetchone()
     db.commit()
@@ -490,26 +567,19 @@ def _resolve_recipients(campaign, db: Session) -> List[dict]:
         filters = ["email IS NOT NULL", "email != ''"]
         params  = {}
 
-        if campaign.recipient_filter:
-            import json
-            try:
-                rf = json.loads(campaign.recipient_filter) \
-                    if isinstance(campaign.recipient_filter, str) \
-                    else campaign.recipient_filter
-                if rf.get("lead_type"):
-                    filters.append("lead_type = :lead_type")
-                    params["lead_type"] = rf["lead_type"]
-                if rf.get("area"):
-                    filters.append("area ILIKE :area")
-                    params["area"] = f"%{rf['area']}%"
-                if rf.get("status"):
-                    filters.append("status = :status")
-                    params["status"] = rf["status"]
-                if rf.get("ai_score"):
-                    filters.append("ai_score = :ai_score")
-                    params["ai_score"] = rf["ai_score"]
-            except Exception:
-                pass
+        rf = _parse_recipient_filter(campaign.recipient_filter)
+        if rf.get("lead_type"):
+            filters.append("lead_type = :lead_type")
+            params["lead_type"] = rf["lead_type"]
+        if rf.get("area"):
+            filters.append("area ILIKE :area")
+            params["area"] = f"%{rf['area']}%"
+        if rf.get("status"):
+            filters.append("status = :status")
+            params["status"] = rf["status"]
+        if rf.get("ai_score"):
+            filters.append("ai_score = :ai_score")
+            params["ai_score"] = rf["ai_score"]
 
         where = " AND ".join(filters)
         rows = db.execute(text(f"""
