@@ -591,7 +591,7 @@ def _resolve_recipients(campaign, db: Session) -> List[dict]:
     elif campaign.recipient_type == "csv_upload":
         rows = db.execute(text("""
             SELECT email, name, lead_id FROM campaign_recipients
-            WHERE campaign_id = :id AND status = 'pending'
+            WHERE campaign_id = :id AND status IN ('reviewed', 'pending')
         """), {"id": campaign.id}).fetchall()
         recipients = [{"email": r.email, "name": r.name, "lead_id": r.lead_id}
                       for r in rows]
@@ -641,7 +641,7 @@ async def _send_campaign_emails(campaign_id: int, db_url: str):
         # Get recipients from campaign_recipients table
         cur.execute("""
             SELECT email, name, lead_id FROM campaign_recipients
-            WHERE campaign_id = %s AND status = 'pending'
+            WHERE campaign_id = %s AND status IN ('reviewed', 'pending')
         """, (campaign_id,))
         recipients = [
             {"email": r[0], "name": r[1], "lead_id": r[2]}
@@ -720,6 +720,195 @@ async def _send_campaign_emails(campaign_id: int, db_url: str):
     finally:
         cur.close()
         conn.close()
+
+
+
+
+@router.post("/campaigns/{campaign_id}/review")
+def review_campaign(
+    campaign_id: int,
+    db:          Session = Depends(get_db),
+    user:        CurrentUser = Depends(get_current_user),
+):
+    """
+    STEP 1 of 2 — Resolve and lock recipients for review.
+
+    Resolves recipients RIGHT NOW based on campaign settings,
+    saves them to campaign_recipients, and locks the campaign.
+    The user must review this list before sending.
+
+    After this call the recipient list is FROZEN.
+    Sending will use exactly these rows — no recalculation.
+    """
+    campaign = db.execute(text("""
+        SELECT * FROM campaigns WHERE id = :id
+    """), {"id": campaign_id}).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    if campaign.status not in ("draft", "failed"):
+        raise HTTPException(400,
+            f"Campaign is '{campaign.status}' — only draft or failed campaigns can be reviewed. "
+            f"To start over, create a new campaign."
+        )
+
+    # Resolve recipients now and freeze them
+    recipients = _resolve_recipients(campaign, db)
+
+    # Count what was excluded
+    # Get raw count before filtering
+    raw_count = 0
+    if campaign.recipient_type == "mailing_list" and campaign.mailing_list_id:
+        raw_count = db.execute(text("""
+            SELECT COUNT(*) FROM mailing_list_contacts
+            WHERE list_id = :list_id
+        """), {"list_id": campaign.mailing_list_id}).scalar()
+    elif campaign.recipient_type == "leads":
+        raw_count = db.execute(text("""
+            SELECT COUNT(*) FROM leads
+            WHERE email IS NOT NULL AND email != ''
+        """)).scalar()
+    elif campaign.recipient_type == "csv_upload":
+        raw_count = db.execute(text("""
+            SELECT COUNT(*) FROM campaign_recipients
+            WHERE campaign_id = :id
+        """), {"id": campaign_id}).scalar()
+
+    valid_count       = len(recipients)
+    excluded_count    = raw_count - valid_count
+
+    # Wipe any previous recipients and save the resolved list
+    db.execute(text("""
+        DELETE FROM campaign_recipients WHERE campaign_id = :id
+    """), {"id": campaign_id})
+
+    for r in recipients:
+        db.execute(text("""
+            INSERT INTO campaign_recipients
+                (campaign_id, email, name, lead_id, status)
+            VALUES (:campaign_id, :email, :name, :lead_id, 'reviewed')
+        """), {
+            "campaign_id": campaign_id,
+            "email":       r["email"],
+            "name":        r.get("name"),
+            "lead_id":     r.get("lead_id"),
+        })
+
+    # Lock campaign as reviewed
+    db.execute(text("""
+        UPDATE campaigns SET
+            status           = 'reviewed',
+            total_recipients = :count,
+            updated_at       = NOW()
+        WHERE id = :id
+    """), {"count": valid_count, "id": campaign_id})
+    db.commit()
+
+    # Check for unsubscribes excluded
+    unsub_count = db.execute(text("""
+        SELECT COUNT(*) FROM unsubscribes
+    """)).scalar()
+
+    return {
+        "campaign_id":     campaign_id,
+        "campaign_name":   campaign.name,
+        "subject":         campaign.subject,
+        "sender":          f"{campaign.sender_name} <{campaign.sender_email}>",
+        "status":          "reviewed",
+        "recipient_summary": {
+            "will_receive":    valid_count,
+            "excluded_total":  excluded_count,
+            "breakdown": {
+                "invalid_email":  "Emails that failed format validation",
+                "duplicates":     "Same email appearing more than once",
+                "unsubscribed":   f"{unsub_count} addresses on global unsubscribe list",
+            }
+        },
+        "recipients": [
+            {
+                "email": r["email"],
+                "name":  r.get("name") or "—",
+            }
+            for r in recipients
+        ],
+        "confirmation_required": True,
+        "next_step": (
+            f"Review the {valid_count} recipients above. "
+            f"If correct, call POST /api/comms/campaigns/{campaign_id}/confirm-send "
+            f"to begin delivery. This list is now locked."
+        ),
+    }
+
+
+@router.post("/campaigns/{campaign_id}/confirm-send")
+async def confirm_send(
+    campaign_id:      int,
+    background_tasks: BackgroundTasks,
+    db:               Session = Depends(get_db),
+    user:             CurrentUser = Depends(get_current_user),
+):
+    """
+    STEP 2 of 2 — Confirm and send to the reviewed recipient list.
+
+    Only works after /review has been called.
+    Sends to EXACTLY the recipients saved during review.
+    No recalculation — what was reviewed is what gets sent.
+    """
+    campaign = db.execute(text("""
+        SELECT * FROM campaigns WHERE id = :id
+    """), {"id": campaign_id}).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    if campaign.status != "reviewed":
+        raise HTTPException(400,
+            f"Campaign must be in 'reviewed' status before sending. "
+            f"Current status: '{campaign.status}'. "
+            f"Call /review first."
+        )
+
+    # Count locked recipients
+    recipient_count = db.execute(text("""
+        SELECT COUNT(*) FROM campaign_recipients
+        WHERE campaign_id = :id AND status = 'reviewed'
+    """), {"id": campaign_id}).scalar()
+
+    if recipient_count == 0:
+        raise HTTPException(400,
+            "No reviewed recipients found. Call /review first."
+        )
+
+    # Mark as sending immediately so no second confirm can slip through
+    db.execute(text("""
+        UPDATE campaigns SET
+            status     = 'sending',
+            started_at = NOW(),
+            updated_at = NOW()
+        WHERE id = :id AND status = 'reviewed'
+    """), {"id": campaign_id})
+    db.commit()
+
+    # Get DB URL for background task
+    from app.config import settings
+    db_url = settings.database_url
+
+    background_tasks.add_task(
+        _send_campaign_emails, campaign_id, db_url
+    )
+
+    return {
+        "campaign_id":      campaign_id,
+        "status":           "sending",
+        "total_recipients": recipient_count,
+        "confirmed_by":     user.name,
+        "message": (
+            f"Confirmed by {user.name}. "
+            f"Sending to {recipient_count} reviewed recipients in background. "
+            f"Poll GET /api/comms/campaigns/{campaign_id} for progress."
+        ),
+    }
 
 
 @router.post("/campaigns/{campaign_id}/send")
