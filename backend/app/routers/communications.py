@@ -87,12 +87,17 @@ async def send_via_resend(
     reply_to:    Optional[str] = None,
 ) -> dict:
     """Send a single email via Resend API."""
-    api_key  = _get_resend_key()
+    api_key  = _get_resend_key().strip()
     app_url  = _get_app_url()
 
     if not api_key:
-        logger.warning("RESEND_API_KEY not set — mock sending")
-        return {"id": f"mock_{to_email}", "mock": True}
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Bulk email is not configured. "
+                "RESEND_API_KEY is required before sending emails."
+            ),
+        )
 
     payload = {
         "from":    f"{from_name} <{from_email}>",
