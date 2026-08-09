@@ -241,37 +241,63 @@ def run(areas=None, skip_scrape=False):
 
     # 5c: Apartment staging leads
     cur.execute("""
+        WITH apartment_candidates AS (
+            SELECT
+                (ARRAY_AGG(a.building_name ORDER BY a.lead_score DESC NULLS LAST, a.id))[1]
+                    AS building_name,
+                (ARRAY_AGG(COALESCE(a.management_company, a.building_name)
+                    ORDER BY a.lead_score DESC NULLS LAST, a.id))[1] AS owner_name,
+                (ARRAY_AGG(a.search_area ORDER BY a.lead_score DESC NULLS LAST, a.id))[1]
+                    AS search_area,
+                (ARRAY_AGG(a.contact_phone ORDER BY a.id)
+                    FILTER (WHERE a.contact_phone IS NOT NULL))[1] AS contact_phone,
+                (ARRAY_AGG(a.contact_email ORDER BY a.id)
+                    FILTER (WHERE a.contact_email IS NOT NULL))[1] AS contact_email,
+                (ARRAY_AGG(a.contact_website ORDER BY a.id)
+                    FILTER (WHERE a.contact_website IS NOT NULL))[1] AS contact_website,
+                CASE
+                    WHEN BOOL_OR(a.confidence = 'high') THEN 'VERIFIED + ACTIVE'
+                    WHEN BOOL_OR(a.confidence = 'medium') THEN 'VERIFIED BUSINESS'
+                    ELSE 'APARTMENT LEAD'
+                END AS lead_quality,
+                MAX(a.lead_score) AS lead_score,
+                LOWER(TRIM(REGEXP_REPLACE(a.building_name, '[^\\w\\s]', '', 'g'))) AS normalized_name
+            FROM apartment_staging a
+            WHERE a.lead_score >= 40
+              AND a.building_name IS NOT NULL
+              AND TRIM(a.building_name) <> ''
+            GROUP BY LOWER(TRIM(REGEXP_REPLACE(a.building_name, '[^\\w\\s]', '', 'g')))
+        ),
+        updated AS (
+            UPDATE leads l
+            SET
+                phone = COALESCE(l.phone, c.contact_phone),
+                email = COALESCE(l.email, c.contact_email),
+                website = COALESCE(l.website, c.contact_website),
+                owner_name = COALESCE(l.owner_name, c.owner_name),
+                score = GREATEST(COALESCE(l.score, 0), COALESCE(c.lead_score, 0)),
+                updated_at = NOW()
+            FROM apartment_candidates c
+            WHERE l.lead_type = 'apartment'
+              AND LOWER(TRIM(REGEXP_REPLACE(l.name, '[^\\w\\s]', '', 'g'))) = c.normalized_name
+            RETURNING l.id
+        )
         INSERT INTO leads (
             name, owner_name, owner_type,
             area, phone, email, website,
             lead_quality, lead_type, source, status, score, promoted_at
         )
-        SELECT DISTINCT ON (a.id)
-            a.building_name,
-            COALESCE(a.management_company, a.building_name),
-            'agency',
-            a.search_area,
-            a.contact_phone,
-            a.contact_email,
-            a.contact_website,
-            CASE
-                WHEN a.confidence = 'high'   THEN 'VERIFIED + ACTIVE'
-                WHEN a.confidence = 'medium' THEN 'VERIFIED BUSINESS'
-                ELSE 'APARTMENT LEAD'
-            END,
-            'apartment',
-            'apartment_discovery',
-            'new',
-            a.lead_score,
-            NOW()
-        FROM apartment_staging a
-        WHERE a.lead_score >= 40
-          AND NOT EXISTS (
-              SELECT 1 FROM leads l
-              WHERE LOWER(l.name) LIKE
-                    '%' || LOWER(SPLIT_PART(a.building_name, ' ', 1)) || '%'
-                AND LOWER(l.area) = LOWER(a.search_area)
-          )
+        SELECT
+            c.building_name, c.owner_name, 'agency',
+            c.search_area, c.contact_phone, c.contact_email, c.contact_website,
+            c.lead_quality, 'apartment', 'apartment_discovery', 'new', c.lead_score, NOW()
+        FROM apartment_candidates c
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM leads l
+            WHERE l.lead_type = 'apartment'
+              AND LOWER(TRIM(REGEXP_REPLACE(l.name, '[^\\w\\s]', '', 'g'))) = c.normalized_name
+        )
         ON CONFLICT DO NOTHING
     """)
     from_apts = cur.rowcount

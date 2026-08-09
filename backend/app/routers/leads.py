@@ -37,6 +37,11 @@ class LeadUpdate(BaseModel):
     assigned_to: Optional[str] = None
 
 
+class BulkAssignment(BaseModel):
+    lead_ids: list[int]
+    assignee_id: int
+
+
 # ── 1. Dashboard summary ───────────────────────────────────────────
 
 @router.get("/dashboard/summary")
@@ -557,7 +562,76 @@ def get_lead_timeline(
 
 # ── 8. Update status — now writes to lead_events ──────────────────
 
-VALID_STATUSES = {"new", "called", "demo_booked", "won", "lost"}
+VALID_STATUSES = {"new", "called", "demo_booked", "won", "lost", "not_qualified"}
+
+
+@router.get("/leads/assignees")
+def list_assignable_sales_reps(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Return active team members who can own a lead."""
+    rows = db.execute(text("""
+        SELECT id, name
+        FROM users
+        WHERE is_active = TRUE
+          AND role IN ('sales', 'manager', 'admin')
+        ORDER BY name
+    """)).fetchall()
+    return [{"id": row.id, "name": row.name} for row in rows]
+
+
+@router.patch("/leads/assignments")
+def assign_leads_bulk(
+    body: BulkAssignment,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Assign up to 100 selected leads to one active sales representative."""
+    lead_ids = sorted(set(body.lead_ids))
+    if not lead_ids:
+        raise HTTPException(status_code=400, detail="Select at least one lead")
+    if len(lead_ids) > 100:
+        raise HTTPException(status_code=400, detail="A bulk assignment can contain at most 100 leads")
+
+    assignee = db.execute(text("""
+        SELECT id, name
+        FROM users
+        WHERE id = :id
+          AND is_active = TRUE
+          AND role IN ('sales', 'manager', 'admin')
+    """), {"id": body.assignee_id}).fetchone()
+    if not assignee:
+        raise HTTPException(status_code=404, detail="Active sales representative not found")
+
+    rows = db.execute(text("""
+        UPDATE leads
+        SET assigned_to = :assigned_to,
+            updated_at = NOW()
+        WHERE id = ANY(:lead_ids)
+        RETURNING id
+    """), {"assigned_to": assignee.name, "lead_ids": lead_ids}).fetchall()
+    updated_ids = [row.id for row in rows]
+
+    if updated_ids:
+        db.execute(text("""
+            INSERT INTO lead_events (lead_id, event_type, to_value, changed_by, note, created_at)
+            SELECT id, 'assigned', :assigned_to, :changed_by, :note, NOW()
+            FROM unnest(CAST(:lead_ids AS integer[])) AS id
+        """), {
+            "lead_ids": updated_ids,
+            "assigned_to": assignee.name,
+            "changed_by": user.name,
+            "note": f"Lead assigned to {assignee.name} in bulk",
+        })
+    db.commit()
+
+    updated_set = set(updated_ids)
+    return {
+        "assigned_to": assignee.name,
+        "updated": len(updated_ids),
+        "missing_ids": [lead_id for lead_id in lead_ids if lead_id not in updated_set],
+    }
 
 
 
@@ -579,8 +653,6 @@ def assign_lead(
         WHERE id = :id
         RETURNING id, name, assigned_to
     """), {"id": lead_id, "user_name": user.name})
-    db.commit()
-
     row = result.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Lead not found")
