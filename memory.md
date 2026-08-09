@@ -6,6 +6,7 @@
 - [2026-07-27 - Cloud Run database pooling repair](#2026-07-27---cloud-run-database-pooling-repair)
 - [2026-07-27 - Frontend API repair and snapshot recovery](#2026-07-27---frontend-api-repair-and-snapshot-recovery)
 - [2026-07-29 - Canonical scraper location contract](#2026-07-29---canonical-scraper-location-contract)
+- [2026-08-09 - Sales team UAT](#2026-08-09---sales-team-uat)
 
 ## Cloud deployment
 
@@ -99,3 +100,11 @@
 - 2026-07-27: Repaired the dashboard/outreach frontend contracts, restored the verified missing historical data additively, and browser-verified every top-level route against the fixed local stack.
 - 2026-07-27: Replaced long-lived scraper database sessions with short-lived retryable transactions after production run `41` exposed an idle transaction-pool disconnect.
 - 2026-07-27: Production run `45` verified the final worker image end to end with accurate UI audit counts and no Cloud Run errors.
+
+## 2026-08-09 - Sales team UAT
+
+- `not_qualified` is a valid lead status in `backend/app/routers/leads.py`, so the existing status endpoint and all status consumers accept the new disposition.
+- Bulk assignment uses `GET /api/leads/assignees` for active sales, manager, and admin users and `PATCH /api/leads/assignments` with `{ lead_ids, assignee_id }`. The endpoint de-duplicates IDs, caps a request at 100, validates the target user, updates the selected rows atomically, and records assignment events. The older `PATCH /api/leads/{id}/assign` path remains available; its returned row is now read before commit so the individual action does not fail after a successful update.
+- Active apartment promotion in `pipeline.py` identifies apartment properties by normalized name and `lead_type`, never `area`. It groups same-name staging rows across areas, combines available phone/email/website fields, and fills only missing contact data on an existing lead. A repeat promotion therefore does not create a second lead for the same property in another area.
+- Existing duplicate cleanup is deliberately report-first: run `python scripts/consolidate_apartment_duplicates.py` for a JSON dry-run, inspect each normalized-name group and its contact counts, then use `--apply` only after that review. The script picks a canonical row, fills its missing contact fields, relinks dependent rows, and deletes the redundant rows in one transaction.
+- Verification on a disposable PostgreSQL database: the pipeline promoted two same-name properties in different areas once, then preserved a subsequently supplied email and website (`1|+254700999001|hello@consolidation.test|https://consolidation.test`). The cleanup script reported one Donyo Park duplicate group across Spring Valley and Westlands while leaving both rows intact in dry-run mode. Focused tests, compile checks, and live browser API/UI flows were also run before commit.
