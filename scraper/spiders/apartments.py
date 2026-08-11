@@ -23,7 +23,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 from playwright.async_api import async_playwright
 from location_catalog import resolve_location, source_search_terms
-from spiders.database import run_transaction
+from spiders.database import _connect, run_transaction
 from spiders.google_consent import dismiss_google_consent
 
 logging.basicConfig(
@@ -32,6 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+ENRICHMENT_SCORE_THRESHOLD = 40
 DEFAULT_AREAS = [
     "Kilimani", "Kileleshwa", "Westlands", "Lavington",
     "South B", "South C", "Parklands", "Muthaiga",
@@ -83,6 +84,7 @@ DB_CONFIG = dict(
 )
 
 
+
 # ── Helpers ───────────────────────────────────────────────────────
 
 def normalize(name: str) -> str:
@@ -105,43 +107,167 @@ def extract_coords(url: str) -> tuple:
     return None, None
 
 
-def score_building(name, category, review_count, rating, area) -> tuple:
+def score_building(name, category, review_count, rating, area, management_company=None,) -> tuple:
     score = 0
     reasons = []
-    nl = (name or "").lower()
-    cl = (category or "").lower()
-    al = (area or "").lower()
 
-    matched = [kw for kw in BUILDING_KEYWORDS if kw in nl]
-    if matched:
-        pts = min(len(matched) * 8, 25)
-        score += pts
-        reasons.append(f"keywords: {', '.join(matched[:3])} (+{pts})")
+    name_lower = (name or "").lower()
+    category_lower = (category or "").lower()
+    area_lower = (area or "").lower()
+    management_lower = (management_company or "").lower()
 
-    rc = review_count or 0
-    if rc >= 200:   score += 25; reasons.append(f"reviews {rc} (+25)")
-    elif rc >= 100: score += 20; reasons.append(f"reviews {rc} (+20)")
-    elif rc >= 50:  score += 15; reasons.append(f"reviews {rc} (+15)")
-    elif rc >= 20:  score += 8;  reasons.append(f"reviews {rc} (+8)")
-    elif rc >= 5:   score += 3;  reasons.append(f"reviews {rc} (+3)")
+    large_property_terms = [
+        "estate",
+        "complex",
+        "gated community",
+    ]
 
-    r = rating or 0
-    if r >= 4.5:   score += 10; reasons.append(f"rating {r} (+10)")
-    elif r >= 4.0: score += 7;  reasons.append(f"rating {r} (+7)")
-    elif r >= 3.5: score += 4;  reasons.append(f"rating {r} (+4)")
+    medium_property_terms = [
+        "towers",
+        "residences",
+        "heights",
+        "gardens",
+        "villas",
+    ]
 
-    if any(kw in cl for kw in MANAGEMENT_CATEGORIES):
-        score += 15; reasons.append(f"category: {category} (+15)")
+    basic_property_terms = [
+        "apartments",
+        "apartment",
+        "flats",
+        "flat",
+    ]
 
-    if al in PREMIUM_AREAS:
-        score += 15; reasons.append(f"premium area (+15)")
-    elif al in HIGH_DENSITY_AREAS:
-        score += 10; reasons.append(f"high-density area (+10)")
+    if any(term in name_lower for term in large_property_terms):
+        score += 30
+        reasons.append("large property/estate signal (+30)")
 
-    if any(s in nl for s in ["phase", "block", "tower", "wing", "ii", "iii"]):
-        score += 10; reasons.append("multi-block indicator (+10)")
+    elif any(term in name_lower for term in medium_property_terms):
+        score += 20
+        reasons.append("medium/large residential property signal (+20)")
 
-    return min(score, 100), " | ".join(reasons)
+    elif any(term in name_lower for term in basic_property_terms):
+        score += 10
+        reasons.append("apartment property signal (+10)")
+
+      # ---------------------------------------------------------
+    # 2. PROFESSIONAL MANAGEMENT EVIDENCE — max 20
+    # ---------------------------------------------------------
+
+    if management_company:
+        score += 20
+        reasons.append(
+            f"identified management company: {management_company} (+20)"
+        )
+
+    elif any(
+        term in category_lower
+        for term in [
+            "property management",
+            "real estate",
+        ]
+    ):
+        score += 10
+        reasons.append("professional management category signal (+10)")
+
+
+    # ---------------------------------------------------------
+    # 3. MULTI-BUILDING / COMPLEX INDICATOR — max 15
+    # ---------------------------------------------------------
+
+    multi_building_terms = [
+        "phase",
+        "block",
+        "tower",
+        "wing",
+        "estate",
+        "complex",
+    ]
+
+    if any(term in name_lower for term in multi_building_terms):
+        score += 15
+        reasons.append("multi-building/complex indicator (+15)")
+
+
+    # ---------------------------------------------------------
+    # 4. ACTIVITY / REVIEW VOLUME — max 15
+    # ---------------------------------------------------------
+
+    reviews = review_count or 0
+
+    if reviews >= 200:
+        score += 15
+        reasons.append(f"{reviews} Google reviews (+15)")
+
+    elif reviews >= 100:
+        score += 12
+        reasons.append(f"{reviews} Google reviews (+12)")
+
+    elif reviews >= 50:
+        score += 10
+        reasons.append(f"{reviews} Google reviews (+10)")
+
+    elif reviews >= 20:
+        score += 7
+        reasons.append(f"{reviews} Google reviews (+7)")
+
+    elif reviews >= 5:
+        score += 3
+        reasons.append(f"{reviews} Google reviews (+3)")
+
+
+    # ---------------------------------------------------------
+    # 5. PROPERTY CATEGORY FIT — max 10
+    # ---------------------------------------------------------
+
+    property_categories = [
+        "apartment building",
+        "residential",
+        "condominium",
+        "housing",
+        "gated community",
+    ]
+
+    if any(term in category_lower for term in property_categories):
+        score += 10
+        reasons.append(f"strong property category: {category} (+10)")
+
+
+    # ---------------------------------------------------------
+    # 6. AREA ATTRACTIVENESS — max 5
+    # ---------------------------------------------------------
+
+    if area_lower in PREMIUM_AREAS:
+        score += 5
+        reasons.append("premium market area (+5)")
+
+    elif area_lower in HIGH_DENSITY_AREAS:
+        score += 3
+        reasons.append("high-density market area (+3)")
+
+
+    # ---------------------------------------------------------
+    # 7. GOOGLE RATING — max 5
+    # ---------------------------------------------------------
+
+    current_rating = rating or 0
+
+    if current_rating >= 4.5:
+        score += 5
+        reasons.append(f"rating {current_rating} (+5)")
+
+    elif current_rating >= 4.0:
+        score += 4
+        reasons.append(f"rating {current_rating} (+4)")
+
+    elif current_rating >= 3.5:
+        score += 2
+        reasons.append(f"rating {current_rating} (+2)")
+
+
+    # Never exceed 100.
+    score = min(score, 100)
+
+    return score, " | ".join(reasons)
 
 
 # ── Discovery ─────────────────────────────────────────────────────
@@ -330,7 +456,7 @@ async def enrich_building(page, building: dict) -> dict:
                 phone = re.sub(r'[\s\-]', '', pm.group())
 
         # ── WEBSITE ────────────────────────────────────────────────────────
-        website = None
+        website = building.get("contact_website")
         web_btn = await page.query_selector(
             'a[data-tooltip*="website"], a[aria-label*="website"]'
         )
@@ -348,23 +474,55 @@ async def enrich_building(page, building: dict) -> dict:
                 website = wm.group().rstrip(".,")
 
         # ── EMAIL ──────────────────────────────────────────────────────────
-        email = None
+        email = building.get("contact_email")
         em = re.search(r'[\w\.\-]+@[\w\.\-]+\.[a-zA-Z]{2,}', full_text)
         if em:
             email = em.group().lower()
 
         # ── MANAGEMENT COMPANY ─────────────────────────────────────────────
-        management_company = None
-        mgmt_kws = ["managed by", "management", "caretaker",
-                    "leasing office", "developed by", "marketed by"]
-        for i, line in enumerate(lines):
-            if any(kw in line.lower() for kw in mgmt_kws):
-                for j in range(i + 1, min(i + 4, len(lines))):
-                    c = lines[j]
-                    if len(c) > 3 and c.lower() != line.lower():
-                        management_company = c
-                        break
-                break
+        management_company = building.get("management_company")
+
+        if not management_company:
+            management_patterns = [
+                r"managed by\s*[:\-]?\s*([^\n|•]{3,80})",
+                r"developed by\s*[:\-]?\s*([^\n|•]{3,80})",
+                r"marketed by\s*[:\-]?\s*([^\n|•]{3,80})",
+                r"property management by\s*[:\-]?\s*([^\n|•]{3,80})",
+            ]
+
+            for pattern in management_patterns:
+                match = re.search(
+                    pattern,
+                    full_text,
+                    re.IGNORECASE,
+                )
+
+                if not match:
+                    continue
+
+                candidate = match.group(1).strip()
+
+                bad_management_values = [
+                    "rating:",
+                    "reviews",
+                    "stars",
+                    "minutes",
+                    "hours",
+                ]
+
+                looks_like_time = bool(
+                    re.fullmatch(r"\d{1,2}:\d{2}", candidate)
+                )
+
+                if (
+                    not looks_like_time
+                    and not any(
+                        bad in candidate.lower()
+                        for bad in bad_management_values
+                    )
+                ):
+                    management_company = candidate
+                    break
 
         # ── SOCIAL MEDIA ───────────────────────────────────────────────────
         socials = []
@@ -380,13 +538,21 @@ async def enrich_building(page, building: dict) -> dict:
         found = sum(bool(x) for x in [phone, website, email, management_company])
         confidence = "high" if found >= 3 else "medium" if found >= 1 else "low"
 
+        has_direct_contact = bool(phone or email)
+
+        enrichment_status = (
+            "done"
+            if has_direct_contact
+            else "no_contact"
+        )
+
         building.update({
             "contact_phone":      phone,
             "contact_email":      email,
             "contact_website":    website,
             "management_company": management_company,
             "social_media":       " | ".join(socials) if socials else None,
-            "enrichment_status":  "done",
+            "enrichment_status":  enrichment_status,
             "confidence":         confidence,
             "enriched_at":        datetime.now(timezone.utc),
         })
@@ -475,6 +641,75 @@ def save_buildings(buildings: list[dict]) -> int:
         operation_name="Saving apartment staging rows",
     )
 
+def rescore_existing():
+    """
+    Recalculate Sales Opportunity Scores for existing apartment_staging
+    records using the current score_building() logic.
+    """
+
+    conn = _connect(DB_CONFIG)
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                id,
+                building_name,
+                category,
+                review_count,
+                rating,
+                search_area,
+                management_company
+            FROM apartment_staging
+        """)
+
+        records = cur.fetchall()
+
+        logger.info(
+            f"Re-scoring {len(records)} existing apartment records..."
+        )
+
+        updated = 0
+
+        for (
+            record_id,
+            name,
+            category,
+            review_count,
+            rating,
+            area,
+            management_company,
+        ) in records:
+
+            score, reasons = score_building(
+                name,
+                category,
+                review_count,
+                rating,
+                area,
+                management_company,
+            )
+
+            cur.execute("""
+                UPDATE apartment_staging
+                SET
+                    lead_score = %s,
+                    score_reasons = %s
+                WHERE id = %s
+            """, (
+                score,
+                reasons,
+                record_id,
+            ))
+
+            updated += 1
+
+        conn.commit()
+
+    logger.info(
+        f"Re-scored {updated} apartment staging records."
+    )
+
+    conn.close()
 
 # ── Re-enrich existing records missing phone ──────────────────────
 
@@ -488,7 +723,8 @@ async def reenrich_missing(areas: list[str], limit: int, headless: bool):
         python scraper/spiders/apartments.py --reenrich-missing
         python scraper/spiders/apartments.py --reenrich-missing --areas "Kilimani"
     """
-    conn = psycopg2.connect(**DB_CONFIG)
+    conn = _connect(DB_CONFIG)
+
 
     with conn.cursor() as cur:
         area_filter = "AND search_area = ANY(%s)" if areas != DEFAULT_AREAS else ""
@@ -497,13 +733,27 @@ async def reenrich_missing(areas: list[str], limit: int, headless: bool):
             params = [areas, limit]
 
         cur.execute(f"""
-            SELECT id, building_name, maps_url, search_area
+            SELECT DISTINCT ON (maps_url) id, building_name, maps_url, search_area,category,review_count,rating, management_company
             FROM apartment_staging
-            WHERE contact_phone IS NULL
-              AND maps_url IS NOT NULL
-              AND enrichment_status != 'skipped'
+            WHERE lead_score >= 40
+                AND maps_url IS NOT NULL
+                AND enrichment_status != 'skipped'
+                AND NOT (
+                    enrichment_status = 'no_contact'
+                    AND enriched_at >= NOW() - INTERVAL '30 days'
+                )
+                AND (
+                    (
+                       contact_phone is NULL
+                       AND contact_email is NULL
+                    )
+                    OR (
+                         lead_score < 50
+                         AND management_company is NULL
+                    )
+                )
               {area_filter}
-            ORDER BY lead_score DESC
+            ORDER BY maps_url, lead_score DESC
             LIMIT %s
         """, params)
         records = cur.fetchall()
@@ -527,32 +777,91 @@ async def reenrich_missing(areas: list[str], limit: int, headless: bool):
         )
         page = await context.new_page()
 
-        for record_id, name, maps_url, area in records:
+        for (record_id, name, maps_url, area, category, review_count, rating, existing_management_company, )in records:
             logger.info(f"  [{record_id}] {name} ({area})")
-            building = {"maps_url": maps_url, "contact_phone": None}
+            building = {
+                "building_name": name,
+                "maps_url": maps_url,
+                "search_area": area,
+                "category": category,
+                "review_count": review_count,
+                "rating": rating,
+                "contact_phone": None,
+                "contact_email": None,
+            }
             await enrich_building(page, building)
 
-            if building.get("contact_phone") or building.get("contact_website"):
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE apartment_staging SET
-                            contact_phone      = COALESCE(%s, contact_phone),
-                            contact_email      = COALESCE(%s, contact_email),
-                            contact_website    = COALESCE(%s, contact_website),
-                            management_company = COALESCE(%s, management_company),
-                            enrichment_status  = 'done',
-                            confidence         = %s,
-                            enriched_at        = NOW()
-                        WHERE id = %s
-                    """, (
-                        building.get("contact_phone"),
-                        building.get("contact_email"),
-                        building.get("contact_website"),
-                        building.get("management_company"),
-                        building.get("confidence", "low"),
-                        record_id,
-                    ))
-                    conn.commit()
+            management_for_score = (
+                building.get("management_company")
+                or existing_management_company
+            )
+
+            final_score, final_reasons = score_building(
+                name,
+                category,
+                review_count,
+                rating,
+                area,
+                management_for_score,
+            )
+
+            building["lead_score"] = final_score
+            building["score_reasons"] = final_reasons
+
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE apartment_staging SET
+                        contact_phone      = COALESCE(%s, contact_phone),
+                        contact_email      = COALESCE(%s, contact_email),
+                        contact_website    = COALESCE(%s, contact_website),
+                        management_company = COALESCE(%s, management_company),
+
+                        lead_score         = %s,
+                        score_reasons      = %s,
+
+                        enrichment_status  = %s,
+                        confidence         = %s,
+                        enriched_at        = NOW()
+
+                    WHERE id = %s
+                """, (
+                    building.get("contact_phone"),
+                    building.get("contact_email"),
+                    building.get("contact_website"),
+                    management_for_score,
+
+                    building.get("lead_score"),
+                    building.get("score_reasons"),
+
+                    building.get("enrichment_status", "failed"),
+                    building.get("confidence", "low"),
+                    record_id,
+                ))
+
+                cur.execute("""
+                    UPDATE apartment_staging SET
+                        contact_phone      = COALESCE(%s, contact_phone),
+                        contact_email      = COALESCE(%s, contact_email),
+                        contact_website    = COALESCE(%s, contact_website),
+                        management_company = COALESCE(%s, management_company),
+                        enrichment_status  = %s,
+                        confidence         = %s,
+                        enriched_at        = NOW()
+
+                    WHERE maps_url = %s
+                    AND id <> %s
+                """, (
+                    building.get("contact_phone"),
+                    building.get("contact_email"),
+                    building.get("contact_website"),
+                    management_for_score,
+                    building.get("enrichment_status", "failed"),
+                    building.get("confidence", "low"),
+                    maps_url,
+                    record_id,
+                ))
+
+                conn.commit()
 
             await asyncio.sleep(2)
 
@@ -611,17 +920,36 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
 
             buildings.sort(key=lambda b: b.get("lead_score", 0), reverse=True)
             to_enrich = [
-                b for b in buildings[:enrich_top]
-                if b.get("maps_url")
-                and not b.get("contact_phone")
+                b
+                for b in buildings
+                if b.get("lead_score", 0) >= ENRICHMENT_SCORE_THRESHOLD
+                and b.get("maps_url")
             ]
 
-            logger.info(f"  Enriching top {len(to_enrich)} buildings...")
+            logger.info(f"  Enriching {len(to_enrich)} sales-worthy buildings"
+                        f"(score >={ENRICHMENT_SCORE_THRESHOLD} )..."
+                        )
             for b in to_enrich:
                 logger.info(
                     f"  [{b['lead_score']:>3}] {b['building_name'][:45]}"
                 )
                 await enrich_building(page, b)
+                final_score, final_reasons = score_building(
+                    b.get("building_name"),
+                    b.get("category"),
+                    b.get("review_count"),
+                    b.get("rating"),
+                    b.get("search_area"),
+                    b.get("management_company"),
+                )
+
+                b["lead_score"] = final_score
+                b["score_reasons"] = final_reasons
+
+                logger.info(
+                    f"    Final sales score: {final_score}"
+                )
+
                 await asyncio.sleep(2)
 
             saved = save_buildings(buildings)
@@ -634,7 +962,7 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
 
         await browser.close()
 
-    with psycopg2.connect(**DB_CONFIG) as c:
+    with _connect(DB_CONFIG) as c:
         with c.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM apartment_staging")
             total = cur.fetchone()[0]
@@ -686,6 +1014,11 @@ def main():
     parser.add_argument("--visible", action="store_true")
     parser.add_argument("--reenrich-missing", action="store_true",
                         help="Re-enrich existing DB records missing phone/website")
+    parser.add_argument(
+    "--rescore-existing",
+    action="store_true",
+    help="Recalculate sales opportunity scores for existing apartment staging records",
+    )
     parser.add_argument("--limit", type=int, default=50,
                         help="Max records to re-enrich (default 50)")
     args = parser.parse_args()
@@ -700,10 +1033,26 @@ def main():
         )
     )
 
-    if args.reenrich_missing:
-        asyncio.run(reenrich_missing(areas, args.limit, not args.visible))
+    if args.rescore_existing:
+        rescore_existing()
+
+    elif args.reenrich_missing:
+        asyncio.run(
+            reenrich_missing(
+                areas,
+                args.limit,
+                not args.visible,
+            )
+        )
+
     else:
-        asyncio.run(run(areas, args.enrich_top, not args.visible))
+        asyncio.run(
+            run(
+                areas,
+                args.enrich_top,
+                not args.visible,
+            )
+        )
 
 
 if __name__ == "__main__":
