@@ -62,7 +62,12 @@ def run_subprocess(cmd, env_extra=None):
 
 
 def run(areas=None, skip_scrape=False):
-    conn = psycopg2.connect(**DB)
+    database_url = os.getenv("DATABASE_URL")
+
+    if database_url:
+        conn = psycopg2.connect(database_url)
+    else:
+        conn = psycopg2.connect(**DB)
     cur = conn.cursor()
     areas = areas or DEFAULT_AREAS
 
@@ -208,8 +213,7 @@ def run(areas=None, skip_scrape=False):
     """)
     from_listings = cur.rowcount
     logger.info(f"Promoted {from_listings} leads from listing_staging")
-
-    # 5b: Google Maps agency leads
+# 5b: Google Maps agency leads
     cur.execute("""
         INSERT INTO leads (
             name, owner_name, owner_type,
@@ -217,91 +221,322 @@ def run(areas=None, skip_scrape=False):
             lead_quality, lead_type, source, status, score, promoted_at
         )
         SELECT DISTINCT ON (g.business_name, g.area)
-            g.business_name, g.business_name, 'agency',
-            g.area, g.phone, g.website,
+            g.business_name,
+            g.business_name,
+            'agency',
+            g.area,
+            g.phone,
+            g.website,
             CASE
                 WHEN g.rating >= 4.0 THEN 'VERIFIED BUSINESS'
                 ELSE 'MAPS ONLY'
             END,
             'agency',
-            'google_maps', 'new',
+            'google_maps',
+            'new',
             20,
             NOW()
         FROM google_places_leads g
         WHERE NOT EXISTS (
-            SELECT 1 FROM leads l
+            SELECT 1
+            FROM leads l
             WHERE LOWER(l.owner_name) LIKE
-                  '%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%'
-              AND LOWER(l.area) = LOWER(g.area)
+                '%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%'
+            AND LOWER(l.area) = LOWER(g.area)
         )
         ON CONFLICT DO NOTHING
     """)
+
     from_google = cur.rowcount
     logger.info(f"Promoted {from_google} Google Maps agency leads")
 
-    # 5c: Apartment staging leads
+
+# 5c: Apartment staging leads
     cur.execute("""
         WITH apartment_candidates AS (
-            SELECT
-                (ARRAY_AGG(a.building_name ORDER BY a.lead_score DESC NULLS LAST, a.id))[1]
-                    AS building_name,
-                (ARRAY_AGG(COALESCE(a.management_company, a.building_name)
-                    ORDER BY a.lead_score DESC NULLS LAST, a.id))[1] AS owner_name,
-                (ARRAY_AGG(a.search_area ORDER BY a.lead_score DESC NULLS LAST, a.id))[1]
-                    AS search_area,
-                (ARRAY_AGG(a.contact_phone ORDER BY a.id)
-                    FILTER (WHERE a.contact_phone IS NOT NULL))[1] AS contact_phone,
-                (ARRAY_AGG(a.contact_email ORDER BY a.id)
-                    FILTER (WHERE a.contact_email IS NOT NULL))[1] AS contact_email,
-                (ARRAY_AGG(a.contact_website ORDER BY a.id)
-                    FILTER (WHERE a.contact_website IS NOT NULL))[1] AS contact_website,
+            SELECT DISTINCT ON (a.maps_url)
+                a.building_name,
+                COALESCE(a.management_company, a.building_name) AS owner_name,
+                a.search_area,
+                a.contact_phone,
+                a.contact_email,
+                a.contact_website,
+                a.maps_url,
+                a.lead_score,
+
                 CASE
-                    WHEN BOOL_OR(a.confidence = 'high') THEN 'VERIFIED + ACTIVE'
-                    WHEN BOOL_OR(a.confidence = 'medium') THEN 'VERIFIED BUSINESS'
+                    WHEN a.confidence = 'high'
+                        THEN 'VERIFIED + ACTIVE'
+                    WHEN a.confidence = 'medium'
+                        THEN 'VERIFIED BUSINESS'
                     ELSE 'APARTMENT LEAD'
                 END AS lead_quality,
-                MAX(a.lead_score) AS lead_score,
-                LOWER(TRIM(REGEXP_REPLACE(a.building_name, '[^\\w\\s]', '', 'g'))) AS normalized_name
+
+                LOWER(
+                    TRIM(
+                        REGEXP_REPLACE(
+                            a.building_name,
+                            '[^\\w\\s]',
+                            '',
+                            'g'
+                        )
+                    )
+                ) AS normalized_name,
+
+                CASE
+                    WHEN REGEXP_REPLACE(
+                        COALESCE(a.contact_phone, ''),
+                        '\\D',
+                        '',
+                        'g'
+                    ) ~ '^0[17][0-9]{8}$'
+                    THEN
+                        '254' ||
+                        SUBSTRING(
+                            REGEXP_REPLACE(
+                                a.contact_phone,
+                                '\\D',
+                                '',
+                                'g'
+                            )
+                            FROM 2
+                        )
+                    ELSE
+                        REGEXP_REPLACE(
+                            COALESCE(a.contact_phone, ''),
+                            '\\D',
+                            '',
+                            'g'
+                        )
+                END AS normalized_phone,
+
+                LOWER(
+                    NULLIF(
+                        TRIM(a.contact_email),
+                        ''
+                    )
+                ) AS normalized_email
+
             FROM apartment_staging a
-            WHERE a.lead_score >= 40
-              AND a.building_name IS NOT NULL
-              AND TRIM(a.building_name) <> ''
-            GROUP BY LOWER(TRIM(REGEXP_REPLACE(a.building_name, '[^\\w\\s]', '', 'g')))
+
+            WHERE a.lead_score >= 50
+            AND a.maps_url IS NOT NULL
+            AND a.building_name IS NOT NULL
+            AND TRIM(a.building_name) <> ''
+            AND (
+                NULLIF(TRIM(a.contact_phone), '') IS NOT NULL
+                OR NULLIF(TRIM(a.contact_email), '') IS NOT NULL
+            )
+
+            ORDER BY
+                a.maps_url,
+                a.lead_score DESC,
+                a.id
         ),
+
         updated AS (
             UPDATE leads l
+
             SET
                 phone = COALESCE(l.phone, c.contact_phone),
                 email = COALESCE(l.email, c.contact_email),
                 website = COALESCE(l.website, c.contact_website),
                 owner_name = COALESCE(l.owner_name, c.owner_name),
-                score = GREATEST(COALESCE(l.score, 0), COALESCE(c.lead_score, 0)),
+
+                source_url = COALESCE(
+                    l.source_url,
+                    c.maps_url
+                ),
+
+                score = GREATEST(
+                    COALESCE(l.score, 0),
+                    COALESCE(c.lead_score, 0)
+                ),
+
                 updated_at = NOW()
+
             FROM apartment_candidates c
+
             WHERE l.lead_type = 'apartment'
-              AND LOWER(TRIM(REGEXP_REPLACE(l.name, '[^\\w\\s]', '', 'g'))) = c.normalized_name
+
+            AND (
+                /* Strongest identity: same Google Maps place */
+                l.source_url = c.maps_url
+
+                OR
+
+                /* Fallback for older leads that do not yet have source_url */
+                (
+                    LOWER(
+                        TRIM(
+                            REGEXP_REPLACE(
+                                l.name,
+                                '[^\\w\\s]',
+                                '',
+                                'g'
+                            )
+                        )
+                    ) = c.normalized_name
+
+                    AND (
+                        (
+                            c.normalized_phone <> ''
+
+                            AND
+
+                            CASE
+                                WHEN REGEXP_REPLACE(
+                                    COALESCE(l.phone, ''),
+                                    '\\D',
+                                    '',
+                                    'g'
+                                ) ~ '^0[17][0-9]{8}$'
+                                THEN
+                                    '254' ||
+                                    SUBSTRING(
+                                        REGEXP_REPLACE(
+                                            l.phone,
+                                            '\\D',
+                                            '',
+                                            'g'
+                                        )
+                                        FROM 2
+                                    )
+
+                                ELSE
+                                    REGEXP_REPLACE(
+                                        COALESCE(l.phone, ''),
+                                        '\\D',
+                                        '',
+                                        'g'
+                                    )
+                            END = c.normalized_phone
+                        )
+
+                        OR
+
+                        (
+                            c.normalized_email IS NOT NULL
+                            AND LOWER(TRIM(l.email))
+                                = c.normalized_email
+                        )
+                    )
+                )
+            )
+
             RETURNING l.id
         )
+
         INSERT INTO leads (
-            name, owner_name, owner_type,
-            area, phone, email, website,
-            lead_quality, lead_type, source, status, score, promoted_at
+            name,
+            owner_name,
+            owner_type,
+            area,
+            phone,
+            email,
+            website,
+            lead_quality,
+            lead_type,
+            source,
+            source_url,
+            status,
+            score,
+            promoted_at
         )
+
         SELECT
-            c.building_name, c.owner_name, 'agency',
-            c.search_area, c.contact_phone, c.contact_email, c.contact_website,
-            c.lead_quality, 'apartment', 'apartment_discovery', 'new', c.lead_score, NOW()
+            c.building_name,
+            c.owner_name,
+            'agency',
+            c.search_area,
+            c.contact_phone,
+            c.contact_email,
+            c.contact_website,
+            c.lead_quality,
+            'apartment',
+            'apartment_discovery',
+            c.maps_url,
+            'new',
+            c.lead_score,
+            NOW()
+
         FROM apartment_candidates c
+
         WHERE NOT EXISTS (
             SELECT 1
             FROM leads l
+
             WHERE l.lead_type = 'apartment'
-              AND LOWER(TRIM(REGEXP_REPLACE(l.name, '[^\\w\\s]', '', 'g'))) = c.normalized_name
+
+            AND (
+                l.source_url = c.maps_url
+
+                OR
+
+                (
+                    LOWER(
+                        TRIM(
+                            REGEXP_REPLACE(
+                                l.name,
+                                '[^\\w\\s]',
+                                '',
+                                'g'
+                            )
+                        )
+                    ) = c.normalized_name
+
+                    AND (
+                        (
+                            c.normalized_phone <> ''
+
+                            AND
+
+                            CASE
+                                WHEN REGEXP_REPLACE(
+                                    COALESCE(l.phone, ''),
+                                    '\\D',
+                                    '',
+                                    'g'
+                                ) ~ '^0[17][0-9]{8}$'
+                                THEN
+                                    '254' ||
+                                    SUBSTRING(
+                                        REGEXP_REPLACE(
+                                            l.phone,
+                                            '\\D',
+                                            '',
+                                            'g'
+                                        )
+                                        FROM 2
+                                    )
+
+                                ELSE
+                                    REGEXP_REPLACE(
+                                        COALESCE(l.phone, ''),
+                                        '\\D',
+                                        '',
+                                        'g'
+                                    )
+                            END = c.normalized_phone
+                        )
+
+                        OR
+
+                        (
+                            c.normalized_email IS NOT NULL
+                            AND LOWER(TRIM(l.email))
+                                = c.normalized_email
+                        )
+                    )
+                )
+            )
         )
+
         ON CONFLICT DO NOTHING
     """)
+
     from_apts = cur.rowcount
-    logger.info(f"Promoted {from_apts} apartment leads")
+    logger.info(f"Promoted {from_apts} new apartment leads")
 
     # 5d: Developer leads from KPDA directory
     cur.execute("""
