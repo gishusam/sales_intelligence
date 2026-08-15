@@ -7,8 +7,6 @@ from typing import Optional
 class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
-    # Optional when DATABASE_URL is provided (Replit / Railway)
-    RESEND_API_KEY: Optional[str] = None
     
     POSTGRES_USER: Optional[str] = None
     POSTGRES_PASSWORD: Optional[str] = None
@@ -29,6 +27,7 @@ class Settings(BaseSettings):
 
     # Resend
     RESEND_API_KEY:    str = ""
+    RESEND_WEBHOOK_SECRET: str = ""
     COMMS_FROM_EMAIL:  str = "onboarding@resend.dev"
     COMMS_FROM_NAME:   str = "Nyumba Zetu"
     APP_URL:           str = "https://nyumba-lead-hub.vercel.app"

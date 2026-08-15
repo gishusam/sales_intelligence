@@ -178,7 +178,7 @@ async def send_via_resend(
 
     payload = {
         "from":    f"{from_name} <{from_email}>",
-        "to":      [f"{to_name} <{to_email}>" if to_name else to_email],
+        "to":      [to_email],
         "subject": subject,
         "text":    body,
     }
@@ -225,6 +225,13 @@ class CampaignCreate(BaseModel):
     mailing_list_id: Optional[int] = None
     recipient_filter: Optional[dict] = None
     # e.g. {"lead_type": "agency", "area": "Kilimani", "status": "new"}
+
+class CampaignUpdate(BaseModel):
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    sender_name: Optional[str] = None
+    sender_email: Optional[str] = None
+    reply_to: Optional[str] = None
 
 
 class MailingListCreate(BaseModel):
@@ -471,39 +478,159 @@ def create_campaign(
 
     return {"id": row.id, "name": row.name, "status": "draft"}
 
+@router.patch("/campaigns/{campaign_id}")
+def update_campaign(
+    campaign_id: int,
+    body: CampaignUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    campaign = db.execute(
+        text("""
+            SELECT id, status
+            FROM campaigns
+            WHERE id = :id
+        """),
+        {"id": campaign_id},
+    ).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    if campaign.status not in ("draft", "reviewed"):
+        raise HTTPException(
+            400,
+            f"Cannot edit campaign with status '{campaign.status}'",
+        )
+
+    updates = body.model_dump(exclude_unset=True)
+
+    if not updates:
+        return {
+            "id": campaign_id,
+            "status": campaign.status,
+        }
+
+    assignments = ", ".join(
+        f"{field} = :{field}"
+        for field in updates
+    )
+
+    db.execute(
+        text(f"""
+            UPDATE campaigns
+            SET {assignments},
+                updated_at = NOW()
+            WHERE id = :id
+        """),
+        {
+            **updates,
+            "id": campaign_id,
+        },
+    )
+
+    db.commit()
+
+    return {
+        "id": campaign_id,
+        "status": campaign.status,
+        "message": "Campaign updated",
+    }
 
 @router.get("/campaigns")
 def get_campaigns(
-    db:   Session = Depends(get_db),
+    db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
     rows = db.execute(text("""
-        SELECT id, name, subject, status, recipient_type,
-               sender_email, total_recipients, sent_count,
-               failed_count, created_by, created_at, finished_at
-        FROM campaigns
-        ORDER BY created_at DESC
+        SELECT
+            c.id,
+            c.name,
+            c.subject,
+            c.status,
+            c.recipient_type,
+            c.sender_email,
+            c.total_recipients,
+            c.sent_count,
+
+            COALESCE(metrics.delivered_count, 0) AS delivered_count,
+            COALESCE(metrics.opened_count, 0) AS opened_count,
+            COALESCE(metrics.clicked_count, 0) AS clicked_count,
+            COALESCE(metrics.bounced_count, 0) AS bounced_count,
+            COALESCE(metrics.failed_count, c.failed_count, 0) AS failed_count,
+
+            c.created_by,
+            c.created_at,
+            c.finished_at
+
+        FROM campaigns c
+
+        LEFT JOIN (
+            SELECT
+                campaign_id,
+
+                COUNT(*) FILTER (
+                    WHERE delivered_at IS NOT NULL
+                ) AS delivered_count,
+
+                COUNT(*) FILTER (
+                    WHERE opened_at IS NOT NULL
+                ) AS opened_count,
+
+                COUNT(*) FILTER (
+                    WHERE clicked_at IS NOT NULL
+                ) AS clicked_count,
+
+                COUNT(*) FILTER (
+                    WHERE bounced_at IS NOT NULL
+                ) AS bounced_count,
+
+                COUNT(*) FILTER (
+                    WHERE failed_at IS NOT NULL
+                       OR status = 'failed'
+                ) AS failed_count
+
+            FROM campaign_recipients
+            GROUP BY campaign_id
+        ) metrics
+            ON metrics.campaign_id = c.id
+
+        ORDER BY c.created_at DESC
         LIMIT 50
     """)).fetchall()
 
     return [
         {
-            "id":               r.id,
-            "name":             r.name,
-            "subject":          r.subject,
-            "status":           r.status,
-            "recipient_type":   r.recipient_type,
-            "sender_email":     r.sender_email,
-            "total_recipients": r.total_recipients,
-            "sent_count":       r.sent_count,
-            "failed_count":     r.failed_count,
-            "created_by":       r.created_by,
-            "created_at":       r.created_at.isoformat() if r.created_at else None,
-            "finished_at":      r.finished_at.isoformat() if r.finished_at else None,
+            "id": r.id,
+            "name": r.name,
+            "subject": r.subject,
+            "status": r.status,
+            "recipient_type": r.recipient_type,
+            "sender_email": r.sender_email,
+
+            "total_recipients": r.total_recipients or 0,
+            "sent_count": r.sent_count or 0,
+
+            "delivered_count": r.delivered_count or 0,
+            "opened_count": r.opened_count or 0,
+            "clicked_count": r.clicked_count or 0,
+            "bounced_count": r.bounced_count or 0,
+            "failed_count": r.failed_count or 0,
+
+            "created_by": r.created_by,
+
+            "created_at": (
+                r.created_at.isoformat()
+                if r.created_at else None
+            ),
+
+            "finished_at": (
+                r.finished_at.isoformat()
+                if r.finished_at else None
+            ),
         }
         for r in rows
     ]
-
 
 @router.get("/campaigns/{campaign_id}")
 def get_campaign(
@@ -543,6 +670,212 @@ def get_campaign(
         "created_at":       row.created_at.isoformat() if row.created_at else None,
         "finished_at":      row.finished_at.isoformat() if row.finished_at else None,
         "recipient_stats":  {r.status: r.count for r in stats},
+    }
+
+@router.get("/campaigns/{campaign_id}/performance")
+def get_campaign_performance(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    campaign = db.execute(
+        text("""
+            SELECT
+                id,
+                name,
+                subject,
+                status,
+                recipient_type,
+                created_at,
+                finished_at
+            FROM campaigns
+            WHERE id = :id
+        """),
+        {"id": campaign_id},
+    ).fetchone()
+
+    if not campaign:
+        raise HTTPException(
+            status_code=404,
+            detail="Campaign not found",
+        )
+
+    summary = db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS recipients,
+
+                COUNT(*) FILTER (
+                    WHERE sent_at IS NOT NULL
+                ) AS sent,
+
+                COUNT(*) FILTER (
+                    WHERE delivered_at IS NOT NULL
+                ) AS delivered,
+
+                COUNT(*) FILTER (
+                    WHERE opened_at IS NOT NULL
+                ) AS opened,
+
+                COUNT(*) FILTER (
+                    WHERE clicked_at IS NOT NULL
+                ) AS clicked,
+
+                COUNT(*) FILTER (
+                    WHERE bounced_at IS NOT NULL
+                ) AS bounced,
+
+                COUNT(*) FILTER (
+                    WHERE failed_at IS NOT NULL
+                       OR status = 'failed'
+                ) AS failed,
+
+                COALESCE(
+                    SUM(open_count),
+                    0
+                ) AS open_events,
+
+                COALESCE(
+                    SUM(click_count),
+                    0
+                ) AS click_events
+
+            FROM campaign_recipients
+            WHERE campaign_id = :id
+        """),
+        {"id": campaign_id},
+    ).fetchone()
+
+    recipients = db.execute(
+        text("""
+            SELECT
+                email,
+                name,
+                status,
+                resend_id,
+                sent_at,
+                delivered_at,
+                opened_at,
+                clicked_at,
+                bounced_at,
+                failed_at,
+                open_count,
+                click_count,
+                bounce_reason,
+                error,
+                last_event_at
+
+            FROM campaign_recipients
+            WHERE campaign_id = :id
+
+            ORDER BY created_at DESC
+        """),
+        {"id": campaign_id},
+    ).fetchall()
+
+    recipient_count = summary.recipients or 0
+    delivered_count = summary.delivered or 0
+    opened_count = summary.opened or 0
+    clicked_count = summary.clicked or 0
+
+    delivery_rate = (
+        round(
+            delivered_count / recipient_count * 100,
+            1,
+        )
+        if recipient_count
+        else 0.0
+    )
+
+    open_rate = (
+        round(
+            opened_count / delivered_count * 100,
+            1,
+        )
+        if delivered_count
+        else 0.0
+    )
+
+    click_rate = (
+        round(
+            clicked_count / delivered_count * 100,
+            1,
+        )
+        if delivered_count
+        else 0.0
+    )
+
+    def serialize_date(value):
+        return value.isoformat() if value else None
+
+    return {
+        "campaign": {
+            "id": campaign.id,
+            "name": campaign.name,
+            "subject": campaign.subject,
+            "status": campaign.status,
+            "recipient_type": campaign.recipient_type,
+            "created_at": serialize_date(
+                campaign.created_at
+            ),
+            "finished_at": serialize_date(
+                campaign.finished_at
+            ),
+        },
+
+        "summary": {
+            "recipients": recipient_count,
+            "sent": summary.sent or 0,
+            "delivered": delivered_count,
+            "opened": opened_count,
+            "clicked": clicked_count,
+            "bounced": summary.bounced or 0,
+            "failed": summary.failed or 0,
+
+            "open_events": summary.open_events or 0,
+            "click_events": summary.click_events or 0,
+
+            "delivery_rate": delivery_rate,
+            "open_rate": open_rate,
+            "click_rate": click_rate,
+        },
+
+        "recipients": [
+            {
+                "email": r.email,
+                "name": r.name,
+                "status": r.status,
+                "resend_id": r.resend_id,
+
+                "sent_at": serialize_date(r.sent_at),
+                "delivered_at": serialize_date(
+                    r.delivered_at
+                ),
+                "opened_at": serialize_date(
+                    r.opened_at
+                ),
+                "clicked_at": serialize_date(
+                    r.clicked_at
+                ),
+                "bounced_at": serialize_date(
+                    r.bounced_at
+                ),
+                "failed_at": serialize_date(
+                    r.failed_at
+                ),
+
+                "open_count": r.open_count or 0,
+                "click_count": r.click_count or 0,
+
+                "bounce_reason": r.bounce_reason,
+                "error": r.error,
+
+                "last_event_at": serialize_date(
+                    r.last_event_at
+                ),
+            }
+            for r in recipients
+        ],
     }
 
 
