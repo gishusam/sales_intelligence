@@ -25,7 +25,7 @@ import logging
 import httpx
 import re
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Literal
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
@@ -218,6 +218,7 @@ class CampaignCreate(BaseModel):
     name:            str
     subject:         str
     body:            str
+    communication_type: Literal["cold_outreach", "newsletter"]
     sender_name:     str = "Nyumba Zetu"
     sender_email:    str = "onboarding@resend.dev"
     reply_to:        Optional[str] = None
@@ -453,11 +454,13 @@ def create_campaign(
 
     row = db.execute(text("""
         INSERT INTO campaigns (
-            name, subject, body, sender_name, sender_email,
+            name, subject, body, communication_type,
+            sender_name, sender_email,
             reply_to, recipient_type, mailing_list_id,
             recipient_filter, status, created_by
         ) VALUES (
-            :name, :subject, :body, :sender_name, :sender_email,
+            :name, :subject, :body, :communication_type,
+            :sender_name, :sender_email,
             :reply_to, :recipient_type, :mailing_list_id,
             :recipient_filter, 'draft', :created_by
         )
@@ -466,6 +469,7 @@ def create_campaign(
         "name":             body.name,
         "subject":          body.subject,
         "body":             body.body,
+        "communication_type": body.communication_type,
         "sender_name":      body.sender_name,
         "sender_email":     body.sender_email,
         "reply_to":         body.reply_to,
@@ -549,6 +553,7 @@ def get_campaigns(
             c.subject,
             c.status,
             c.recipient_type,
+            c.communication_type,
             c.sender_email,
             c.total_recipients,
             c.sent_count,
@@ -606,6 +611,7 @@ def get_campaigns(
             "subject": r.subject,
             "status": r.status,
             "recipient_type": r.recipient_type,
+            "communication_type": r.communication_type,
             "sender_email": r.sender_email,
 
             "total_recipients": r.total_recipients or 0,
@@ -663,6 +669,7 @@ def get_campaign(
         "reply_to":         row.reply_to,
         "status":           row.status,
         "recipient_type":   row.recipient_type,
+        "communication_type": row.communication_type,
         "total_recipients": row.total_recipients,
         "sent_count":       row.sent_count,
         "failed_count":     row.failed_count,
@@ -686,6 +693,7 @@ def get_campaign_performance(
                 subject,
                 status,
                 recipient_type,
+                communication_type,
                 created_at,
                 finished_at
             FROM campaigns
@@ -815,6 +823,7 @@ def get_campaign_performance(
             "subject": campaign.subject,
             "status": campaign.status,
             "recipient_type": campaign.recipient_type,
+            "communication_type": campaign.communication_type,
             "created_at": serialize_date(
                 campaign.created_at
             ),

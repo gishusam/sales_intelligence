@@ -59,6 +59,7 @@ def _campaign_body(recipient_filter):
         name="Kilimani Event",
         subject="Upcoming Nyumba Zetu Event",
         body="Hello {contact_name}",
+        communication_type="cold_outreach",
         recipient_type="leads",
         recipient_filter=recipient_filter,
     )

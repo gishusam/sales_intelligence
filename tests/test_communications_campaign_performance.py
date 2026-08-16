@@ -38,6 +38,7 @@ class RecentCampaignDB:
                     subject="Nyumba Zetu Demo",
                     status="sent",
                     recipient_type="leads",
+                    communication_type="cold_outreach",
                     sender_email="sales@nyumbazetu.com",
                     total_recipients=10,
                     sent_count=10,
@@ -72,6 +73,7 @@ class PerformanceDB:
                     subject="Nyumba Zetu Demo",
                     status="sent",
                     recipient_type="leads",
+                    communication_type="cold_outreach",
                     created_at=datetime(
                         2026, 8, 13, 8, 0,
                         tzinfo=timezone.utc,
@@ -146,6 +148,7 @@ def test_recent_campaigns_include_delivery_metrics():
 
     campaign = result[0]
 
+    assert campaign["communication_type"] == "cold_outreach"
     assert campaign["total_recipients"] == 10
     assert campaign["sent_count"] == 10
     assert campaign["delivered_count"] == 8
@@ -164,6 +167,7 @@ def test_campaign_performance_returns_summary_rates_and_recipients():
 
     assert result["campaign"]["id"] == 7
     assert result["campaign"]["name"] == "Kilimani Demo"
+    assert result["campaign"]["communication_type"] == "cold_outreach"
 
     summary = result["summary"]
 
