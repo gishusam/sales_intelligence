@@ -35,14 +35,20 @@ SCRAPER_COMMANDS = {
 }
 
 
-def build_scraper_command(scraper_type: str, area_id: str | None):
+def build_scraper_command(scraper_type: str, area_id: str | None, run_id: int | None = None):
     command = SCRAPER_COMMANDS.get(scraper_type)
     if command is None:
         return None
     if scraper_type in {"apartments", "agencies"}:
         if not area_id:
             return None
-        return [*command, "--area-id", area_id]
+
+        full_command = [*command, "--area-id", area_id]
+
+        if scraper_type == "agencies" and run_id is not None:
+            full_command.extend(["--run-id", str(run_id)])
+
+        return full_command
     return list(command)
 
 
@@ -169,6 +175,12 @@ def save_run_records(run_id: int, scraper_type: str) -> int:
     category = source["category"]
     lead_type = source["lead_type"]
 
+    scope_filter = (
+        "s.run_id = %(run_id)s"
+        if scraper_type == "agencies"
+        else "s.scraped_at >= r.started_at"
+    )
+
     conn = psycopg2.connect(get_database_url())
     cur = conn.cursor()
     try:
@@ -209,7 +221,7 @@ def save_run_records(run_id: int, scraper_type: str) -> int:
                 END
             FROM {table} s
             JOIN scraper_runs r ON r.id = %(run_id)s
-            WHERE s.scraped_at >= r.started_at
+            WHERE {scope_filter}
         """, {"run_id": run_id})
         saved = cur.rowcount
         conn.commit()
@@ -248,7 +260,7 @@ def summarize_run_records(run_id: int) -> dict:
         conn.close()
 
 
-def count_metrics(scraper_type: str) -> dict:
+def count_metrics(scraper_type: str, run_id: int | None = None) -> dict:
     conn = psycopg2.connect(get_database_url())
     cur  = conn.cursor()
 
@@ -260,19 +272,37 @@ def count_metrics(scraper_type: str) -> dict:
     table = table_map.get(scraper_type, "google_places_leads")
 
     try:
-        cur.execute(f"""
-            SELECT COUNT(*) FROM {table}
-            WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
-        """)
+        if scraper_type == "agencies" and run_id is not None:
+
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM google_places_leads
+                WHERE run_id = %s
+            """, (run_id,))
+        else:
+            cur.execute(f"""
+                SELECT COUNT(*) FROM {table}
+                WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
+            """)
+
         records_found = cur.fetchone()[0]
 
         with_contacts = 0
         if scraper_type == "agencies":
-            cur.execute("""
-                SELECT COUNT(*) FROM google_places_leads
-                WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
-                AND phone IS NOT NULL
-            """)
+            if run_id is not None:
+                cur.execute("""
+                    SELECT COUNT(*) FROM google_places_leads
+                    WHERE run_id = %s
+                      AND phone IS NOT NULL
+                """, (run_id,))
+            else:
+                cur.execute("""
+                    SELECT COUNT(*)
+                    FROM google_places_leads
+                    WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
+                    AND phone IS NOT NULL
+                """)
+
             with_contacts = cur.fetchone()[0]
         elif scraper_type == "apartments":
             cur.execute("""
@@ -331,7 +361,7 @@ def main():
 
     start = time.time()
 
-    full_cmd = build_scraper_command(scraper_type, area_id)
+    full_cmd = build_scraper_command(scraper_type, area_id, run_id=run_id)
     if not full_cmd:
         update_run(run_id, {
             "status": "failed",
@@ -347,33 +377,32 @@ def main():
             capture_output=True,
             text=True,
             timeout=SCRAPER_TIMEOUT_SECONDS,
-            env={
-                **os.environ,
-                "POSTGRES_HOST":     os.getenv("POSTGRES_HOST"),
-                "POSTGRES_PORT":     os.getenv("POSTGRES_PORT", "5432"),
-                "POSTGRES_DB":       os.getenv("POSTGRES_DB"),
-                "POSTGRES_USER":     os.getenv("POSTGRES_USER"),
-                "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD"),
-            }
+            env=os.environ.copy()
         )
 
         log_subprocess_output(result, "Scraper")
         ensure_command_succeeded(result, "Scraper")
 
-        scraped_metrics = count_metrics(scraper_type)
+        scraped_metrics = count_metrics(scraper_type, run_id=run_id)
         ensure_scrape_produced_records(scraped_metrics)
 
         logger.info("Scrape done — promoting to leads...")
 
+        promotion_cmd = [
+            "python",
+            "pipeline.py",
+            "--skip-scrape",
+            "--scraper-type",
+            scraper_type,
+            "--run-id",
+            str(run_id),
+        ]
+
         promotion = subprocess.run(
-            ["python", "pipeline.py", "--skip-scrape"],
+            promotion_cmd,
+
             capture_output=True, text=True, timeout=120,
-            env={**os.environ,
-                 "POSTGRES_HOST": os.getenv("POSTGRES_HOST"),
-                 "POSTGRES_PORT": os.getenv("POSTGRES_PORT", "5432"),
-                 "POSTGRES_DB":   os.getenv("POSTGRES_DB"),
-                 "POSTGRES_USER": os.getenv("POSTGRES_USER"),
-                 "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD")}
+            env=os.environ.copy()
         )
         log_subprocess_output(promotion, "Promotion")
         ensure_command_succeeded(promotion, "Promotion")

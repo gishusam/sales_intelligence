@@ -72,7 +72,7 @@ def ensure_table(conn):
     logger.info("google_places_leads table ready")
 
 
-def save_results(results):
+def save_results(results, run_id=None):
     if not results:
         return 0
     rows = [(
@@ -81,6 +81,7 @@ def save_results(results):
         r["review_count"], r["category"],
         r["search_query"], r["maps_url"],
         datetime.now(timezone.utc),
+        run_id,
     ) for r in results]
 
     def persist(connection):
@@ -89,14 +90,15 @@ def save_results(results):
                 INSERT INTO google_places_leads
                   (business_name, area, address, phone, website,
                    rating, review_count, category, search_query,
-                   maps_url, scraped_at)
+                   maps_url, scraped_at, run_id)
                 VALUES %s
                 ON CONFLICT (business_name, area) DO UPDATE SET
                   phone        = EXCLUDED.phone,
                   website      = EXCLUDED.website,
                   rating       = EXCLUDED.rating,
                   review_count = EXCLUDED.review_count,
-                  scraped_at   = EXCLUDED.scraped_at
+                  scraped_at   = EXCLUDED.scraped_at,
+                  run_id       = EXCLUDED.run_id
             """, rows)
         return len(rows)
 
@@ -287,7 +289,7 @@ async def scrape_area(page, location_value):
     return area_results
 
 
-async def run(areas, headless=True):
+async def run(areas, headless=True, run_id=None):
     run_transaction(
         ensure_table,
         fallback_config=DB_CONFIG,
@@ -321,7 +323,7 @@ async def run(areas, headless=True):
                 location["name"],
             )
             results = await scrape_area(page, area)
-            saved = save_results(results)
+            saved = save_results(results, run_id=run_id)
             total += saved
             logger.info(
                 "Area '%s': %s found → %s saved",
@@ -340,6 +342,7 @@ async def run(areas, headless=True):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--area-id", type=str)
+    parser.add_argument("--run-id", type=int)
     parser.add_argument("--areas", type=str,
                         help="Comma-separated areas e.g. 'Kilimani,Westlands'")
     parser.add_argument("--visible", action="store_true",
@@ -356,7 +359,12 @@ def main():
         )
     )
 
-    asyncio.run(run(areas, headless=not args.visible))
+    asyncio.run(
+        run(areas,
+            headless=not args.visible,
+            run_id=args.run_id,
+        )
+    )
 
 
 if __name__ == "__main__":

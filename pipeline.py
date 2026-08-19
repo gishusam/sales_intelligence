@@ -61,7 +61,7 @@ def run_subprocess(cmd, env_extra=None):
         )
 
 
-def run(areas=None, skip_scrape=False):
+def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
     database_url = os.getenv("DATABASE_URL")
 
     if database_url:
@@ -104,67 +104,126 @@ def run(areas=None, skip_scrape=False):
     # ── STEP 3: Clean noise ───────────────────────────────────────
     step("STEP 3 — Cleaning raw tables")
 
-    cur.execute("""
-        DELETE FROM google_places_leads
-        WHERE business_name = 'Sponsored'
-           OR business_name ILIKE '%Nyumba Zetu%'
-           OR business_name ILIKE '%BuyRentKenya%'
-           OR business_name ILIKE '%Bomahut%'
-    """)
+    if scraper_type in (None, "agencies"):
+        if run_id is not None:
+            cur.execute("""
+                DELETE FROM google_places_leads
+                WHERE run_id = %s
+                AND (
+                    business_name = 'Sponsored'
+                    OR business_name ILIKE '%%Nyumba Zetu%%'
+                    OR business_name ILIKE '%%BuyRentKenya%%'
+                    OR business_name ILIKE '%%Bomahut%%'
+                )
+            """, (run_id,))
+        else:
+            cur.execute("""
+                DELETE FROM google_places_leads
+                WHERE business_name = 'Sponsored'
+                OR business_name ILIKE '%%Nyumba Zetu%%'
+                OR business_name ILIKE '%%BuyRentKenya%%'
+                OR business_name ILIKE '%%Bomahut%%'
+            """)
+
+        logger.info(
+            f"Removed {cur.rowcount} noise rows from google_places_leads"
+        )
     logger.info(f"Removed {cur.rowcount} noise rows from google_places_leads")
 
-    cur.execute("""
-        DELETE FROM apartment_staging
-        WHERE building_name ILIKE '%Nyumba Zetu%'
-           OR building_name ILIKE '%Bomahut%'
-           OR building_name = 'Sponsored'
-    """)
-    logger.info(f"Removed {cur.rowcount} noise rows from apartment_staging")
+    if scraper_type in (None, "apartments"):
+        cur.execute("""
+            DELETE FROM apartment_staging
+            WHERE building_name ILIKE '%%Nyumba Zetu%%'
+            OR building_name ILIKE '%%Bomahut%%'
+            OR building_name = 'Sponsored'
+        """)
+        logger.info(
+            f"Removed {cur.rowcount} noise rows from apartment_staging"
+        )
 
-    cur.execute("""
-        UPDATE listing_staging
-        SET owner_phone = REGEXP_REPLACE(owner_phone, '[^0-9+]', '', 'g')
-        WHERE owner_phone IS NOT NULL
-    """)
+    if scraper_type is None:
+        cur.execute("""
+            UPDATE listing_staging
+            SET owner_phone = REGEXP_REPLACE(
+                owner_phone,
+                '[^0-9+]',
+                '',
+                'g'
+            )
+            WHERE owner_phone IS NOT NULL
+        """)
     conn.commit()
 
     # ── STEP 4: Score listing_staging ────────────────────────────
-    step("STEP 4 — Scoring listing_staging leads")
+    if scraper_type is None:
+        step("STEP 4 — Scoring listing_staging leads")
 
-    cur.execute("""
-        SELECT area, COUNT(*) FROM listing_staging
-        WHERE area IS NOT NULL GROUP BY area
-    """)
-    zone_counts = {r[0]: r[1] for r in cur.fetchall()}
-    max_zone = max(zone_counts.values()) if zone_counts else 1
-    owner_weights = {"agency": 100, "pm": 80, "owner": 60}
+        cur.execute("""
+            SELECT area, COUNT(*)
+            FROM listing_staging
+            WHERE area IS NOT NULL
+            GROUP BY area
+        """)
+        zone_counts = {r[0]: r[1] for r in cur.fetchall()}
+        max_zone = max(zone_counts.values()) if zone_counts else 1
+        owner_weights = {"agency": 100, "pm": 80, "owner": 60}
 
-    cur.execute("""
-        SELECT id, bedrooms, owner_type, area, listing_age_days
-        FROM listing_staging
-    """)
-    rows = cur.fetchall()
+        cur.execute("""
+            SELECT id, bedrooms, owner_type, area, listing_age_days
+            FROM listing_staging
+        """)
+        rows = cur.fetchall()
 
-    for row_id, bedrooms, otype, area, age_days in rows:
-        unit_score    = min((bedrooms or 1) / 6 * 40, 40)
-        type_score    = owner_weights.get(otype, 60) * 35 / 100
-        density_score = (zone_counts.get(area, 1) / max_zone) * 25
+        for row_id, bedrooms, otype, area, age_days in rows:
+            unit_score = min((bedrooms or 1) / 6 * 40, 40)
+            type_score = owner_weights.get(otype, 60) * 35 / 100
+            density_score = (
+                zone_counts.get(area, 1) / max_zone
+            ) * 25
 
-        total = round(unit_score + type_score + density_score, 1)
+            total = round(
+                unit_score + type_score + density_score,
+                1,
+            )
 
-        # Recency adjustment — CEO request
-        if age_days is not None and age_days > 365:
-            total = round(total * 0.7, 1)
+            # Recency adjustment — CEO request
+            if age_days is not None and age_days > 365:
+                total = round(total * 0.7, 1)
 
-        priority = "HOT" if total >= 65 else "WARM" if total >= 45 else "COLD"
-        cur.execute(
-            "UPDATE listing_staging SET score=%s, priority=%s WHERE id=%s",
-            (total, priority, row_id)
+            priority = (
+                "HOT"
+                if total >= 65
+                else "WARM"
+                if total >= 45
+                else "COLD"
+            )
+
+            cur.execute(
+                """
+                UPDATE listing_staging
+                SET score = %s,
+                    priority = %s
+                WHERE id = %s
+                """,
+                (total, priority, row_id),
+            )
+
+        conn.commit()
+        logger.info(
+            f"Scored {len(rows)} listing_staging records"
+        )
+    else:
+        logger.info(
+            "STEP 4 — Skipped listing scoring "
+            f"for {scraper_type} run"
         )
 
-    conn.commit()
-    logger.info(f"Scored {len(rows)} listing_staging records")
 
+    # ── Promotion scope ───────────────────────────────────────────
+    promote_listings = scraper_type is None
+    promote_agencies = scraper_type in (None, "agencies")
+    promote_apartments = scraper_type in (None, "apartments")
+    promote_developers = scraper_type in (None, "developers")
     # ── STEP 5: Promote to production leads table ─────────────────
     step("STEP 5 — Promoting to production leads table")
 
@@ -205,16 +264,24 @@ def run(areas=None, skip_scrape=False):
         FROM listing_staging s
         LEFT JOIN google_places_leads g
             ON LOWER(s.owner_name) LIKE
-               '%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%'
+               '%%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%%'
            AND LOWER(s.area) = LOWER(g.area)
-        WHERE s.owner_name IS NOT NULL
-          AND s.promoted = FALSE
+        WHERE %s
+            AND s.owner_name IS NOT NULL
+            AND s.promoted = FALSE
         ON CONFLICT DO NOTHING
-    """)
+    """, (promote_listings,))
     from_listings = cur.rowcount
     logger.info(f"Promoted {from_listings} leads from listing_staging")
 # 5b: Google Maps agency leads
-    cur.execute("""
+    agency_run_filter = ""
+    agency_params = [promote_agencies]
+
+    if run_id is not None:
+        agency_run_filter = "AND g.run_id = %s"
+        agency_params.append(run_id)
+
+    cur.execute(f"""
         INSERT INTO leads (
             name, owner_name, owner_type,
             area, phone, website,
@@ -237,15 +304,17 @@ def run(areas=None, skip_scrape=False):
             20,
             NOW()
         FROM google_places_leads g
-        WHERE NOT EXISTS (
+        WHERE %s
+            {agency_run_filter}
+            AND NOT EXISTS (
             SELECT 1
             FROM leads l
             WHERE LOWER(l.owner_name) LIKE
-                '%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%'
+                '%%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%%'
             AND LOWER(l.area) = LOWER(g.area)
         )
         ON CONFLICT DO NOTHING
-    """)
+    """, tuple(agency_params))
 
     from_google = cur.rowcount
     logger.info(f"Promoted {from_google} Google Maps agency leads")
@@ -319,7 +388,8 @@ def run(areas=None, skip_scrape=False):
 
             FROM apartment_staging a
 
-            WHERE a.lead_score >= 50
+            WHERE %s
+            AND a.lead_score >= 50
             AND a.maps_url IS NOT NULL
             AND a.building_name IS NOT NULL
             AND TRIM(a.building_name) <> ''
@@ -533,7 +603,7 @@ def run(areas=None, skip_scrape=False):
         )
 
         ON CONFLICT DO NOTHING
-    """)
+    """, (promote_apartments,))
 
     from_apts = cur.rowcount
     logger.info(f"Promoted {from_apts} new apartment leads")
@@ -565,22 +635,27 @@ def run(areas=None, skip_scrape=False):
             d.tier_score,
             NOW()
         FROM developer_staging d
-        WHERE d.developer_name IS NOT NULL
+        WHERE %s
+          AND d.developer_name IS NOT NULL
           AND (d.contact_phone IS NOT NULL OR d.contact_website IS NOT NULL)
           AND NOT EXISTS (
               SELECT 1 FROM leads l
               WHERE LOWER(l.name) = LOWER(d.developer_name)
           )
         ON CONFLICT DO NOTHING
-    """)
+    """, (promote_developers,))
     from_devs = cur.rowcount
     logger.info(f"Promoted {from_devs} developer leads")
 
     # Mark listing_staging as promoted
-    cur.execute("""
-        UPDATE listing_staging SET promoted = TRUE
-        WHERE promoted = FALSE AND owner_name IS NOT NULL
-    """)
+    # Mark listing staging only during the full pipeline.
+    if scraper_type is None:
+        cur.execute("""
+            UPDATE listing_staging
+            SET promoted = TRUE
+            WHERE promoted = FALSE
+            AND owner_name IS NOT NULL
+        """)
     conn.commit()
 
     # ── STEP 6: Summary ───────────────────────────────────────────
@@ -668,7 +743,17 @@ if __name__ == "__main__":
                         help="Skip scraping, reprocess existing data")
     parser.add_argument("--areas", type=str,
                         help="Comma-separated areas")
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        help="Only promote staging records belonging to this scraper run",
+    )
+    parser.add_argument(
+    "--scraper-type",
+    choices=["agencies", "apartments", "developers"],
+    )
+
     args = parser.parse_args()
 
     areas = [a.strip() for a in args.areas.split(",")] if args.areas else None
-    run(areas=areas, skip_scrape=args.skip_scrape)
+    run(areas=areas, skip_scrape=args.skip_scrape, run_id=args.run_id, scraper_type=args.scraper_type)
