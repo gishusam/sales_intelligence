@@ -45,7 +45,7 @@ def build_scraper_command(scraper_type: str, area_id: str | None, run_id: int | 
 
         full_command = [*command, "--area-id", area_id]
 
-        if scraper_type == "agencies" and run_id is not None:
+        if scraper_type in {"agencies", "apartments"} and run_id is not None:
             full_command.extend(["--run-id", str(run_id)])
 
         return full_command
@@ -177,7 +177,7 @@ def save_run_records(run_id: int, scraper_type: str) -> int:
 
     scope_filter = (
         "s.run_id = %(run_id)s"
-        if scraper_type == "agencies"
+        if scraper_type in {"agencies", "apartments"}
         else "s.scraped_at >= r.started_at"
     )
 
@@ -272,11 +272,10 @@ def count_metrics(scraper_type: str, run_id: int | None = None) -> dict:
     table = table_map.get(scraper_type, "google_places_leads")
 
     try:
-        if scraper_type == "agencies" and run_id is not None:
-
-            cur.execute("""
+        if scraper_type in {"agencies", "apartments"} and run_id is not None:
+            cur.execute(f"""
                 SELECT COUNT(*)
-                FROM google_places_leads
+                FROM {table}
                 WHERE run_id = %s
             """, (run_id,))
         else:
@@ -293,23 +292,38 @@ def count_metrics(scraper_type: str, run_id: int | None = None) -> dict:
                 cur.execute("""
                     SELECT COUNT(*) FROM google_places_leads
                     WHERE run_id = %s
-                      AND phone IS NOT NULL
+                      AND NULLIF(TRIM(phone), '') IS NOT NULL
                 """, (run_id,))
             else:
                 cur.execute("""
                     SELECT COUNT(*)
                     FROM google_places_leads
                     WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
-                    AND phone IS NOT NULL
+                      AND NULLIF(TRIM(phone), '') IS NOT NULL
                 """)
 
             with_contacts = cur.fetchone()[0]
+
         elif scraper_type == "apartments":
-            cur.execute("""
-                SELECT COUNT(*) FROM apartment_staging
-                WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
-                AND (contact_phone IS NOT NULL OR contact_website IS NOT NULL)
-            """)
+            if run_id is not None:
+                cur.execute("""
+                    SELECT COUNT(*) FROM apartment_staging
+                    WHERE run_id = %s
+                      AND (
+                          NULLIF(TRIM(contact_phone), '') IS NOT NULL
+                          OR NULLIF(TRIM(contact_email), '') IS NOT NULL
+                      )
+                """, (run_id,))
+            else:
+                cur.execute("""
+                    SELECT COUNT(*) FROM apartment_staging
+                    WHERE scraped_at >= NOW() - INTERVAL '30 minutes'
+                      AND (
+                          NULLIF(TRIM(contact_phone), '') IS NOT NULL
+                          OR NULLIF(TRIM(contact_email), '') IS NOT NULL
+                      )
+                """)
+
             with_contacts = cur.fetchone()[0]
 
         cur.execute("""

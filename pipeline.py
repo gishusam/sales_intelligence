@@ -275,7 +275,11 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
     logger.info(f"Promoted {from_listings} leads from listing_staging")
 # 5b: Google Maps agency leads
     agency_run_filter = ""
-    agency_params = [promote_agencies]
+    agency_params = [
+        run_id is not None,
+        run_id,
+        promote_agencies,
+    ]
 
     if run_id is not None:
         agency_run_filter = "AND g.run_id = %s"
@@ -285,7 +289,8 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
         INSERT INTO leads (
             name, owner_name, owner_type,
             area, phone, website,
-            lead_quality, lead_type, source, status, score, promoted_at
+            lead_quality, lead_type, source, status, score, promoted_at,
+            assigned_to
         )
         SELECT DISTINCT ON (g.business_name, g.area)
             g.business_name,
@@ -302,10 +307,19 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
             'google_maps',
             'new',
             20,
-            NOW()
+            NOW(),
+            CASE
+                WHEN %s THEN (
+                    SELECT started_by
+                    FROM scraper_runs
+                    WHERE id = %s
+                )
+                ELSE NULL
+            END
         FROM google_places_leads g
         WHERE %s
             {agency_run_filter}
+            AND NULLIF(TRIM(g.phone), '') IS NOT NULL
             AND NOT EXISTS (
             SELECT 1
             FROM leads l
@@ -321,7 +335,14 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
 
 
 # 5c: Apartment staging leads
-    cur.execute("""
+    apartment_run_filter = ""
+    apartment_params = [promote_apartments]
+
+    if run_id is not None:
+        apartment_run_filter = "AND a.run_id = %s"
+        apartment_params.append(run_id)
+
+    cur.execute(f"""
         WITH apartment_candidates AS (
             SELECT DISTINCT ON (a.maps_url)
                 a.building_name,
@@ -389,6 +410,7 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
             FROM apartment_staging a
 
             WHERE %s
+            {apartment_run_filter}
             AND a.lead_score >= 50
             AND a.maps_url IS NOT NULL
             AND a.building_name IS NOT NULL
@@ -511,7 +533,8 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
             source_url,
             status,
             score,
-            promoted_at
+            promoted_at,
+            assigned_to
         )
 
         SELECT
@@ -528,7 +551,12 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
             c.maps_url,
             'new',
             c.lead_score,
-            NOW()
+            NOW(),
+            (
+                SELECT started_by
+                FROM scraper_runs
+                WHERE id = %s
+            )
 
         FROM apartment_candidates c
 
@@ -603,7 +631,7 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
         )
 
         ON CONFLICT DO NOTHING
-    """, (promote_apartments,))
+    """, tuple(apartment_params + [run_id]))
 
     from_apts = cur.rowcount
     logger.info(f"Promoted {from_apts} new apartment leads")

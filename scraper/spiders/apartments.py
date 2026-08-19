@@ -572,7 +572,7 @@ async def enrich_building(page, building: dict) -> dict:
 
 # ── Database ──────────────────────────────────────────────────────
 
-def save_buildings(buildings: list[dict]) -> int:
+def save_buildings(buildings: list[dict], run_id: int | None = None) -> int:
     if not buildings:
         return 0
 
@@ -598,6 +598,7 @@ def save_buildings(buildings: list[dict]) -> int:
         b.get("confidence", "low"),
         b.get("enriched_at"),
         datetime.now(timezone.utc),
+        run_id,
     ) for b in buildings]
 
     def persist(connection):
@@ -612,7 +613,7 @@ def save_buildings(buildings: list[dict]) -> int:
                     contact_phone, contact_email, contact_website,
                     management_company, social_media,
                     enrichment_status, confidence,
-                    enriched_at, scraped_at
+                    enriched_at, scraped_at, run_id
                 ) VALUES %s
                 ON CONFLICT (normalized_name, search_area) DO UPDATE SET
                     rating             = EXCLUDED.rating,
@@ -631,7 +632,8 @@ def save_buildings(buildings: list[dict]) -> int:
                     enrichment_status  = EXCLUDED.enrichment_status,
                     confidence         = EXCLUDED.confidence,
                     enriched_at        = EXCLUDED.enriched_at,
-                    scraped_at         = EXCLUDED.scraped_at
+                    scraped_at         = EXCLUDED.scraped_at,
+                    run_id             = EXCLUDED.run_id
             """, rows)
         return len(rows)
 
@@ -885,7 +887,7 @@ async def reenrich_missing(areas: list[str], limit: int, headless: bool):
 
 # ── Main ──────────────────────────────────────────────────────────
 
-async def run(areas: list[str], enrich_top: int, headless: bool):
+async def run(areas: list[str], enrich_top: int, headless: bool, run_id: int | None = None):
     grand_total = 0
 
     async with async_playwright() as pw:
@@ -952,7 +954,7 @@ async def run(areas: list[str], enrich_top: int, headless: bool):
 
                 await asyncio.sleep(2)
 
-            saved = save_buildings(buildings)
+            saved = save_buildings(buildings, run_id=run_id)
             grand_total += saved
             logger.info(
                 "  Saved %s buildings for %s",
@@ -1010,6 +1012,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--area-id", type=str)
     parser.add_argument("--areas", type=str)
+    parser.add_argument("--run-id", type=int)
     parser.add_argument("--enrich-top", type=int, default=15)
     parser.add_argument("--visible", action="store_true")
     parser.add_argument("--reenrich-missing", action="store_true",
@@ -1051,6 +1054,7 @@ def main():
                 areas,
                 args.enrich_top,
                 not args.visible,
+                args.run_id,
             )
         )
 
