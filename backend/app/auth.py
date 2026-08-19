@@ -43,11 +43,21 @@ def create_access_token(data: dict) -> str:
 # ── JWT verification — used as a route dependency ─────────────────
 
 class CurrentUser:
-    def __init__(self, id: int, name: str, email: str, role: str):
+    def __init__(
+        self,
+        id: int,
+        name: str,
+        email: str,
+        role: str,
+        can_manage_communication_templates: bool = False,
+    ):
         self.id = id
         self.name = name
         self.email = email
         self.role = role
+        self.can_manage_communication_templates = (
+            can_manage_communication_templates
+        )
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
@@ -74,4 +84,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> CurrentUser:
         name=payload.get("name"),
         email=payload.get("email"),
         role=payload.get("role", "sales"),
+        can_manage_communication_templates=bool(
+            payload.get(
+                "can_manage_communication_templates",
+                False,
+            )
+        ),
     )

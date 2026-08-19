@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
     email                TEXT NOT NULL UNIQUE,
     password_hash        TEXT NOT NULL,
     role                 TEXT NOT NULL DEFAULT 'sales',
+    can_manage_communication_templates BOOLEAN NOT NULL DEFAULT FALSE,
     is_active            BOOLEAN DEFAULT TRUE,
     must_change_password BOOLEAN DEFAULT FALSE,
     created_at           TIMESTAMPTZ DEFAULT NOW(),

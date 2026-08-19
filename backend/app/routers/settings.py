@@ -85,7 +85,13 @@ def update_email_settings(
     db:   Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Update templates — any rep can edit."""
+    """Update centrally managed email templates and sender settings."""
+    if not user.can_manage_communication_templates:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to manage communication templates",
+        )
+
     updates = 0
 
     if body.sender_name is not None:

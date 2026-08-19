@@ -20,6 +20,7 @@ Endpoints:
 """
 
 import os
+import base64
 import json
 import logging
 import httpx
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.auth import get_current_user, CurrentUser
+from pathlib import Path
 
 router = APIRouter(prefix="/api/comms", tags=["communications"])
 logger = logging.getLogger(__name__)
@@ -144,6 +146,19 @@ def is_valid_email(email: str) -> bool:
     return bool(re.match(pattern, email.strip()))
 
 
+def _delivery_outcome(
+    sent_count: int,
+    failed_count: int,
+) -> str:
+    if failed_count == 0:
+        return "sent"
+
+    if sent_count == 0:
+        return "failed"
+
+    return "sent_with_issues"
+
+
 def is_unsubscribed(db: Session, email: str) -> bool:
     row = db.execute(
         text("SELECT 1 FROM unsubscribes WHERE email = :email"),
@@ -152,7 +167,140 @@ def is_unsubscribed(db: Session, email: str) -> bool:
     return row is not None
 
 
+# ── Campaign attachments ──────────────────────────────────────────
+
+MAX_CAMPAIGN_ATTACHMENT_SIZE = 5 * 1024 * 1024
+
+ALLOWED_CAMPAIGN_ATTACHMENT_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+}
+
+
+def validate_campaign_attachment(
+    filename: str,
+    content: bytes,
+    content_type: str,
+) -> dict:
+    """Validate an uploaded campaign attachment."""
+    extension = Path(filename or "").suffix.lower()
+
+    if extension not in ALLOWED_CAMPAIGN_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported attachment type",
+        )
+
+    if len(content) > MAX_CAMPAIGN_ATTACHMENT_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail="Attachment too large — maximum 5MB",
+        )
+
+    return {
+        "filename": filename,
+        "content": content,
+        "content_type": content_type,
+        "size": len(content),
+    }
+
+
+
+
+def ensure_campaign_attachment_editable(status: str) -> None:
+    """Attachments may only change before campaign sending starts."""
+    if status not in ("draft", "reviewed"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot change attachment for campaign "
+                f"with status '{status}'"
+            ),
+        )
+
+
+def campaign_attachment_update_values(
+    filename,
+    content,
+    content_type,
+) -> dict:
+    """Return campaign attachment fields ready for database persistence."""
+    if filename is None or content is None:
+        return {
+            "attachment_name": None,
+            "attachment_content": None,
+            "attachment_mime_type": None,
+            "attachment_size": None,
+        }
+
+    return {
+        "attachment_name": filename,
+        "attachment_content": content,
+        "attachment_mime_type": content_type,
+        "attachment_size": len(content),
+    }
+
+
+def build_resend_attachment(
+    filename: str,
+    content: bytes,
+) -> dict:
+    """Build the attachment payload expected by Resend."""
+    return {
+        "filename": filename,
+        "content": base64.b64encode(content).decode("ascii"),
+    }
+
+
 # ── Resend sender ─────────────────────────────────────────────────
+
+
+
+def campaign_attachment_send_kwargs(campaign: dict) -> dict:
+    """Forward a campaign's saved attachment to the email sender."""
+    return {
+        "attachment_name": campaign.get("attachment_name"),
+        "attachment_content": campaign.get("attachment_content"),
+    }
+
+
+def build_resend_payload(
+    to_email: str,
+    from_email: str,
+    from_name: str,
+    subject: str,
+    body: str,
+    reply_to: Optional[str] = None,
+    attachment_name: Optional[str] = None,
+    attachment_content: Optional[bytes] = None,
+) -> dict:
+    """Build the Resend API payload for a campaign email."""
+    payload = {
+        "from": f"{from_name} <{from_email}>",
+        "to": [to_email],
+        "subject": subject,
+        "text": body,
+    }
+
+    if reply_to:
+        payload["reply_to"] = reply_to
+
+    if attachment_name and attachment_content is not None:
+        payload["attachments"] = [
+            build_resend_attachment(
+                filename=attachment_name,
+                content=attachment_content,
+            )
+        ]
+
+    return payload
+
 
 async def send_via_resend(
     to_email:    str,
@@ -162,6 +310,8 @@ async def send_via_resend(
     subject:     str,
     body:        str,
     reply_to:    Optional[str] = None,
+    attachment_name: Optional[str] = None,
+    attachment_content: Optional[bytes] = None,
 ) -> dict:
     """Send a single email via Resend API."""
     api_key  = _get_resend_key().strip()
@@ -176,14 +326,16 @@ async def send_via_resend(
             ),
         )
 
-    payload = {
-        "from":    f"{from_name} <{from_email}>",
-        "to":      [to_email],
-        "subject": subject,
-        "text":    body,
-    }
-    if reply_to:
-        payload["reply_to"] = reply_to
+    payload = build_resend_payload(
+        to_email=to_email,
+        from_email=from_email,
+        from_name=from_name,
+        subject=subject,
+        body=body,
+        reply_to=reply_to,
+        attachment_name=attachment_name,
+        attachment_content=attachment_content,
+    )
 
     # Add unsubscribe link to body
     unsubscribe_url = f"{app_url}/unsubscribe?email={to_email}"
@@ -243,6 +395,10 @@ class MailingListCreate(BaseModel):
 class ContactAdd(BaseModel):
     contacts: List[dict]
     # each: { "email": "...", "name": "..." }
+
+class CampaignRecipientUpload(BaseModel):
+    recipients: List[dict]
+
 
 
 class UnsubscribeRequest(BaseModel):
@@ -437,6 +593,117 @@ def import_leads_to_list(
     }
 
 
+# ── Campaign attachment endpoints ──────────────────────────────────
+
+@router.post("/campaigns/{campaign_id}/attachment")
+async def upload_campaign_attachment(
+    campaign_id: int,
+    attachment: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    campaign = db.execute(
+        text("""
+            SELECT id, status
+            FROM campaigns
+            WHERE id = :id
+        """),
+        {"id": campaign_id},
+    ).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    ensure_campaign_attachment_editable(campaign.status)
+
+    content = await attachment.read()
+
+    validated = validate_campaign_attachment(
+        filename=attachment.filename or "",
+        content=content,
+        content_type=(
+            attachment.content_type
+            or "application/octet-stream"
+        ),
+    )
+
+    values = campaign_attachment_update_values(
+        filename=validated["filename"],
+        content=validated["content"],
+        content_type=validated["content_type"],
+    )
+
+    db.execute(
+        text("""
+            UPDATE campaigns
+            SET attachment_name = :attachment_name,
+                attachment_content = :attachment_content,
+                attachment_mime_type = :attachment_mime_type,
+                attachment_size = :attachment_size,
+                attachment_url = NULL,
+                updated_at = NOW()
+            WHERE id = :id
+        """),
+        {
+            **values,
+            "id": campaign_id,
+        },
+    )
+
+    db.commit()
+
+    return {
+        "campaign_id": campaign_id,
+        "attachment_name": values["attachment_name"],
+        "attachment_size": values["attachment_size"],
+        "attachment_mime_type": values["attachment_mime_type"],
+    }
+
+
+@router.delete("/campaigns/{campaign_id}/attachment")
+def delete_campaign_attachment(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    campaign = db.execute(
+        text("""
+            SELECT id, status
+            FROM campaigns
+            WHERE id = :id
+        """),
+        {"id": campaign_id},
+    ).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    ensure_campaign_attachment_editable(campaign.status)
+
+    db.execute(
+        text("""
+            UPDATE campaigns
+            SET attachment_name = NULL,
+                attachment_content = NULL,
+                attachment_mime_type = NULL,
+                attachment_size = NULL,
+                attachment_url = NULL,
+                updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"id": campaign_id},
+    )
+
+    db.commit()
+
+    return {
+        "campaign_id": campaign_id,
+        "attachment_name": None,
+        "attachment_size": None,
+        "attachment_mime_type": None,
+    }
+
+
 # ── Campaign endpoints ─────────────────────────────────────────────
 
 @router.post("/campaigns")
@@ -481,6 +748,99 @@ def create_campaign(
     db.commit()
 
     return {"id": row.id, "name": row.name, "status": "draft"}
+
+@router.post("/campaigns/{campaign_id}/recipients")
+def upload_campaign_recipients(
+    campaign_id: int,
+    body: CampaignRecipientUpload,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    campaign = db.execute(
+        text("""
+            SELECT id, recipient_type, status
+            FROM campaigns
+            WHERE id = :id
+        """),
+        {"id": campaign_id},
+    ).fetchone()
+
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    if campaign.recipient_type != "csv_upload":
+        raise HTTPException(
+            400,
+            "Recipient upload is only available for csv_upload campaigns",
+        )
+
+    if campaign.status != "draft":
+        raise HTTPException(
+            400,
+            "CSV recipients can only be uploaded to draft campaigns",
+        )
+
+    valid = []
+    seen = set()
+    invalid = 0
+    duplicates = 0
+
+    for recipient in body.recipients:
+        email = str(
+            recipient.get("email", "")
+        ).strip().lower()
+
+        name = str(
+            recipient.get("name", "")
+        ).strip() or None
+
+        if not is_valid_email(email):
+            invalid += 1
+            continue
+
+        if email in seen:
+            duplicates += 1
+            continue
+
+        seen.add(email)
+
+        valid.append({
+            "email": email,
+            "name": name,
+        })
+
+    db.execute(
+        text("""
+            DELETE FROM campaign_recipients
+            WHERE campaign_id = :campaign_id
+        """),
+        {"campaign_id": campaign_id},
+    )
+
+    for recipient in valid:
+        db.execute(
+            text("""
+                INSERT INTO campaign_recipients
+                    (campaign_id, email, name, status)
+                VALUES
+                    (:campaign_id, :email, :name, 'pending')
+            """),
+            {
+                "campaign_id": campaign_id,
+                "email": recipient["email"],
+                "name": recipient["name"],
+            },
+        )
+
+    db.commit()
+
+    return {
+        "uploaded": len(body.recipients),
+        "valid": len(valid),
+        "invalid": invalid,
+        "duplicates": duplicates,
+    }
+
 
 @router.patch("/campaigns/{campaign_id}")
 def update_campaign(
@@ -888,6 +1248,36 @@ def get_campaign_performance(
     }
 
 
+def _lead_filter_query(recipient_filter):
+    """Build the shared WHERE clause for filtered lead campaigns."""
+    filters = ["email IS NOT NULL", "email != ''"]
+    params = {}
+
+    rf = (
+        _parse_recipient_filter(recipient_filter)
+        if recipient_filter
+        else {}
+    )
+
+    if rf.get("lead_type"):
+        filters.append("lead_type = :lead_type")
+        params["lead_type"] = rf["lead_type"]
+
+    if rf.get("area"):
+        filters.append("area ILIKE :area")
+        params["area"] = f"%{rf['area']}%"
+
+    if rf.get("status"):
+        filters.append("status = :status")
+        params["status"] = rf["status"]
+
+    if rf.get("ai_score"):
+        filters.append("ai_score = :ai_score")
+        params["ai_score"] = rf["ai_score"]
+
+    return " AND ".join(filters), params
+
+
 def _resolve_recipients(campaign, db: Session) -> List[dict]:
     """
     Resolve recipients based on campaign type.
@@ -905,30 +1295,24 @@ def _resolve_recipients(campaign, db: Session) -> List[dict]:
                       for r in rows]
 
     elif campaign.recipient_type == "leads":
-        # Use recipient_filter if set
-        filters = ["email IS NOT NULL", "email != ''"]
-        params  = {}
+        where, params = _lead_filter_query(
+            campaign.recipient_filter
+        )
 
-        rf = _parse_recipient_filter(campaign.recipient_filter)
-        if rf.get("lead_type"):
-            filters.append("lead_type = :lead_type")
-            params["lead_type"] = rf["lead_type"]
-        if rf.get("area"):
-            filters.append("area ILIKE :area")
-            params["area"] = f"%{rf['area']}%"
-        if rf.get("status"):
-            filters.append("status = :status")
-            params["status"] = rf["status"]
-        if rf.get("ai_score"):
-            filters.append("ai_score = :ai_score")
-            params["ai_score"] = rf["ai_score"]
-
-        where = " AND ".join(filters)
         rows = db.execute(text(f"""
-            SELECT id, name, email FROM leads WHERE {where}
+            SELECT id, name, email
+            FROM leads
+            WHERE {where}
         """), params).fetchall()
-        recipients = [{"email": r.email, "name": r.name, "lead_id": r.id}
-                      for r in rows]
+
+        recipients = [
+            {
+                "email": r.email,
+                "name": r.name,
+                "lead_id": r.id,
+            }
+            for r in rows
+        ]
 
     elif campaign.recipient_type == "csv_upload":
         rows = db.execute(text("""
@@ -1014,6 +1398,7 @@ async def _send_campaign_emails(campaign_id: int, db_url: str):
                     subject    = personalised_subject,
                     body       = personalised_body,
                     reply_to   = campaign.get("reply_to"),
+                    **campaign_attachment_send_kwargs(campaign),
                 )
 
                 cur.execute("""
@@ -1036,15 +1421,25 @@ async def _send_campaign_emails(campaign_id: int, db_url: str):
 
             conn.commit()
 
-        # Mark campaign complete
+        # Mark campaign complete using the actual delivery outcome.
+        final_status = _delivery_outcome(
+            sent_count=sent_count,
+            failed_count=failed_count,
+        )
+
         cur.execute("""
             UPDATE campaigns SET
-                status       = 'sent',
+                status       = %s,
                 finished_at  = NOW(),
                 sent_count   = %s,
                 failed_count = %s
             WHERE id = %s
-        """, (sent_count, failed_count, campaign_id))
+        """, (
+            final_status,
+            sent_count,
+            failed_count,
+            campaign_id,
+        ))
         conn.commit()
 
         logger.info(
@@ -1107,10 +1502,18 @@ def review_campaign(
             WHERE list_id = :list_id
         """), {"list_id": campaign.mailing_list_id}).scalar()
     elif campaign.recipient_type == "leads":
-        raw_count = db.execute(text("""
-            SELECT COUNT(*) FROM leads
-            WHERE email IS NOT NULL AND email != ''
-        """)).scalar()
+        where, params = _lead_filter_query(
+            campaign.recipient_filter
+        )
+
+        raw_count = db.execute(
+            text(f"""
+                SELECT COUNT(*)
+                FROM leads
+                WHERE {where}
+            """),
+            params,
+        ).scalar()
     elif campaign.recipient_type == "csv_upload":
         raw_count = db.execute(text("""
             SELECT COUNT(*) FROM campaign_recipients
