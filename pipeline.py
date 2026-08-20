@@ -275,39 +275,233 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
     logger.info(f"Promoted {from_listings} leads from listing_staging")
 # 5b: Google Maps agency leads
     agency_run_filter = ""
-    agency_params = [
-        run_id is not None,
-        run_id,
-        promote_agencies,
-    ]
+    agency_params = [promote_agencies]
 
     if run_id is not None:
         agency_run_filter = "AND g.run_id = %s"
         agency_params.append(run_id)
 
     cur.execute(f"""
+        WITH normalized_agencies AS (
+            SELECT
+                g.id,
+                g.business_name,
+                g.area,
+                g.phone,
+                g.website,
+                NULLIF(TRIM(g.maps_url), '') AS maps_url,
+                g.rating,
+                g.review_count,
+
+                LOWER(
+                    TRIM(
+                        REGEXP_REPLACE(
+                            g.business_name,
+                            '[^\\w\\s]',
+                            '',
+                            'g'
+                        )
+                    )
+                ) AS normalized_name,
+
+                CASE
+                    WHEN REGEXP_REPLACE(
+                        COALESCE(g.phone, ''),
+                        '\\D',
+                        '',
+                        'g'
+                    ) ~ '^0[17][0-9]{{8}}$'
+                    THEN
+                        '254' ||
+                        SUBSTRING(
+                            REGEXP_REPLACE(
+                                g.phone,
+                                '\\D',
+                                '',
+                                'g'
+                            )
+                            FROM 2
+                        )
+                    ELSE
+                        REGEXP_REPLACE(
+                            COALESCE(g.phone, ''),
+                            '\\D',
+                            '',
+                            'g'
+                        )
+                END AS normalized_phone
+
+            FROM google_places_leads g
+
+            WHERE %s
+                {agency_run_filter}
+                AND NULLIF(TRIM(g.phone), '') IS NOT NULL
+                AND NULLIF(TRIM(g.business_name), '') IS NOT NULL
+        ),
+
+        agency_by_contact AS (
+            /*
+             * Same business name + same phone = same agency,
+             * regardless of which area/search produced it.
+             */
+            SELECT DISTINCT ON (
+                normalized_name,
+                normalized_phone
+            )
+                *
+            FROM normalized_agencies
+
+            ORDER BY
+                normalized_name,
+                normalized_phone,
+                (maps_url IS NOT NULL) DESC,
+                rating DESC NULLS LAST,
+                review_count DESC NULLS LAST,
+                id
+        ),
+
+        agency_candidates AS (
+            /*
+             * Also collapse records that point to the exact same
+             * Google Maps business.
+             */
+            SELECT DISTINCT ON (
+                COALESCE(
+                    maps_url,
+                    'contact:' || normalized_name || '|' || normalized_phone
+                )
+            )
+                *
+            FROM agency_by_contact
+
+            ORDER BY
+                COALESCE(
+                    maps_url,
+                    'contact:' || normalized_name || '|' || normalized_phone
+                ),
+                rating DESC NULLS LAST,
+                review_count DESC NULLS LAST,
+                id
+        ),
+
+        updated AS (
+            UPDATE leads l
+
+            SET
+                phone = COALESCE(
+                    NULLIF(TRIM(l.phone), ''),
+                    c.phone
+                ),
+
+                website = COALESCE(
+                    NULLIF(TRIM(l.website), ''),
+                    c.website
+                ),
+
+                source_url = COALESCE(
+                    NULLIF(TRIM(l.source_url), ''),
+                    c.maps_url
+                ),
+
+                updated_at = NOW()
+
+            FROM agency_candidates c
+
+            WHERE l.lead_type = 'agency'
+
+              AND (
+                    /* Strongest identity: same Google Maps business */
+                    (
+                        c.maps_url IS NOT NULL
+                        AND l.source_url = c.maps_url
+                    )
+
+                    OR
+
+                    /* Fallback: same business name + same phone */
+                    (
+                        LOWER(
+                            TRIM(
+                                REGEXP_REPLACE(
+                                    l.name,
+                                    '[^\\w\\s]',
+                                    '',
+                                    'g'
+                                )
+                            )
+                        ) = c.normalized_name
+
+                        AND
+
+                        CASE
+                            WHEN REGEXP_REPLACE(
+                                COALESCE(l.phone, ''),
+                                '\\D',
+                                '',
+                                'g'
+                            ) ~ '^0[17][0-9]{{8}}$'
+                            THEN
+                                '254' ||
+                                SUBSTRING(
+                                    REGEXP_REPLACE(
+                                        l.phone,
+                                        '\\D',
+                                        '',
+                                        'g'
+                                    )
+                                    FROM 2
+                                )
+                            ELSE
+                                REGEXP_REPLACE(
+                                    COALESCE(l.phone, ''),
+                                    '\\D',
+                                    '',
+                                    'g'
+                                )
+                        END = c.normalized_phone
+                    )
+              )
+
+            RETURNING l.id
+        )
+
         INSERT INTO leads (
-            name, owner_name, owner_type,
-            area, phone, website,
-            lead_quality, lead_type, source, status, score, promoted_at,
+            name,
+            owner_name,
+            owner_type,
+            area,
+            phone,
+            website,
+            lead_quality,
+            lead_type,
+            source,
+            source_url,
+            status,
+            score,
+            promoted_at,
             assigned_to
         )
-        SELECT DISTINCT ON (g.business_name, g.area)
-            g.business_name,
-            g.business_name,
+
+        SELECT
+            c.business_name,
+            c.business_name,
             'agency',
-            g.area,
-            g.phone,
-            g.website,
+            c.area,
+            c.phone,
+            c.website,
+
             CASE
-                WHEN g.rating >= 4.0 THEN 'VERIFIED BUSINESS'
+                WHEN c.rating >= 4.0 THEN 'VERIFIED BUSINESS'
                 ELSE 'MAPS ONLY'
             END,
+
             'agency',
             'google_maps',
+            c.maps_url,
             'new',
             20,
             NOW(),
+
             CASE
                 WHEN %s THEN (
                     SELECT started_by
@@ -316,22 +510,75 @@ def run(areas=None, skip_scrape=False, run_id=None, scraper_type=None):
                 )
                 ELSE NULL
             END
-        FROM google_places_leads g
-        WHERE %s
-            {agency_run_filter}
-            AND NULLIF(TRIM(g.phone), '') IS NOT NULL
-            AND NOT EXISTS (
+
+        FROM agency_candidates c
+
+        WHERE NOT EXISTS (
             SELECT 1
             FROM leads l
-            WHERE LOWER(l.owner_name) LIKE
-                '%%' || LOWER(SPLIT_PART(g.business_name, ' ', 1)) || '%%'
-            AND LOWER(l.area) = LOWER(g.area)
+
+            WHERE l.lead_type = 'agency'
+
+              AND (
+                    (
+                        c.maps_url IS NOT NULL
+                        AND l.source_url = c.maps_url
+                    )
+
+                    OR
+
+                    (
+                        LOWER(
+                            TRIM(
+                                REGEXP_REPLACE(
+                                    l.name,
+                                    '[^\\w\\s]',
+                                    '',
+                                    'g'
+                                )
+                            )
+                        ) = c.normalized_name
+
+                        AND
+
+                        CASE
+                            WHEN REGEXP_REPLACE(
+                                COALESCE(l.phone, ''),
+                                '\\D',
+                                '',
+                                'g'
+                            ) ~ '^0[17][0-9]{{8}}$'
+                            THEN
+                                '254' ||
+                                SUBSTRING(
+                                    REGEXP_REPLACE(
+                                        l.phone,
+                                        '\\D',
+                                        '',
+                                        'g'
+                                    )
+                                    FROM 2
+                                )
+                            ELSE
+                                REGEXP_REPLACE(
+                                    COALESCE(l.phone, ''),
+                                    '\\D',
+                                    '',
+                                    'g'
+                                )
+                        END = c.normalized_phone
+                    )
+              )
         )
+
         ON CONFLICT DO NOTHING
-    """, tuple(agency_params))
+    """, tuple(
+        agency_params +
+        [run_id is not None, run_id]
+    ))
 
     from_google = cur.rowcount
-    logger.info(f"Promoted {from_google} Google Maps agency leads")
+    logger.info(f"Promoted {from_google} new Google Maps agency leads")
 
 
 # 5c: Apartment staging leads
