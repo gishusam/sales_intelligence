@@ -186,12 +186,48 @@ def get_leads_summary(db: Session = Depends(get_db)):
 def get_outreach_leads(
     lead_type: str = Query(...),
     filter_by: Literal["all", "emailed", "not_emailed"] = Query("all"),
+    q: Optional[str] = None,
+    area: Optional[str] = None,
+    source: Optional[str] = None,
+    status: Optional[str] = None,
+    ai_score: Optional[str] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     """Return lead rows enriched with their latest successfully sent email."""
-    counts = db.execute(text("""
+
+    filters = ["l.lead_type = :lead_type"]
+    params = {"lead_type": lead_type}
+
+    if q and q.strip():
+        filters.append("""
+            (
+                l.name ILIKE :q
+                OR l.owner_name ILIKE :q
+                OR l.area ILIKE :q
+            )
+        """)
+        params["q"] = f"%{q.strip()}%"
+
+    if area:
+        filters.append("LOWER(l.area) = LOWER(:area)")
+        params["area"] = area
+
+    if source:
+        filters.append("l.source = :source")
+        params["source"] = source
+
+    if status:
+        filters.append("l.status = :status")
+        params["status"] = status
+
+    if ai_score:
+        filters.append("l.ai_score = :ai_score")
+        params["ai_score"] = ai_score
+
+    base_where = " AND ".join(filters)
+    counts = db.execute(text(f"""
         SELECT
             COUNT(*) AS all,
             COUNT(*) FILTER (
@@ -209,8 +245,8 @@ def get_outreach_leads(
                 )
             ) AS not_emailed
         FROM leads l
-        WHERE l.lead_type = :lead_type
-    """), {"lead_type": lead_type}).fetchone()
+        WHERE {base_where}
+    """), params).fetchone()
 
     count_values = {
         "all": counts.all,
@@ -248,12 +284,12 @@ def get_outreach_leads(
             LIMIT 1
         ) latest_email ON TRUE
         LEFT JOIN users sender ON sender.id = latest_email.sent_by
-        WHERE l.lead_type = :lead_type
+        WHERE {base_where}
         {email_filter}
         ORDER BY l.score DESC NULLS LAST, l.created_at DESC
         LIMIT :limit OFFSET :offset
     """), {
-        "lead_type": lead_type,
+        **params,
         "limit": limit,
         "offset": offset,
     }).fetchall()
@@ -1078,126 +1114,6 @@ def get_notifications(
         "total":         total_count,
         "notifications": notifications,
         "has_urgent":    len(overdue) > 0 or len(followups_today) > 0,
-    }
-
-
-@router.get("/leads/outreach")
-def get_outreach_leads(
-    lead_type:  str = Query(None),
-    filter_by:  str = Query("all"),  # all / emailed / not_emailed / replied
-    area:       str = Query(None),
-    page:       int = Query(1, ge=1),
-    limit:      int = Query(20, ge=1, le=100),
-    db:         Session = Depends(get_db),
-    user:       CurrentUser = Depends(get_current_user),
-):
-    """
-    Cold outreach view — leads segmented by email status.
-    filter_by:
-      all         — all leads with phone or email
-      emailed     — cold email sent (email_sent_at IS NOT NULL)
-      not_emailed — never contacted by email (email_sent_at IS NULL)
-
-    Powers the cold outreach filter tabs on Apartments/Agencies pages.
-    """
-    filters = ["(phone IS NOT NULL OR email IS NOT NULL)"]
-    params  = {}
-
-    if lead_type:
-        filters.append("lead_type = :lead_type")
-        params["lead_type"] = lead_type
-
-    if area:
-        filters.append("area ILIKE :area")
-        params["area"] = f"%{area}%"
-
-    if filter_by == "emailed":
-        filters.append("email_sent_at IS NOT NULL")
-    elif filter_by == "not_emailed":
-        filters.append("email_sent_at IS NULL")
-
-    where  = " AND ".join(filters)
-    offset = (page - 1) * limit
-
-    total = db.execute(
-        text(f"SELECT COUNT(*) FROM leads WHERE {where}"), params
-    ).scalar()
-
-    rows = db.execute(text(f"""
-        SELECT
-            l.id, l.name, l.owner_name, l.phone, l.email,
-            l.website, l.area, l.lead_type, l.score,
-            l.status, l.assigned_to, l.ai_score,
-            l.last_contacted, l.email_sent_at, l.follow_up_date,
-            l.contact_attempts,
-            -- Last email sent
-            (SELECT e.sent_at FROM email_outreach e
-             WHERE e.lead_id = l.id AND e.status = 'sent'
-             ORDER BY e.sent_at DESC LIMIT 1) AS last_email_sent_at,
-            (SELECT e.email_type FROM email_outreach e
-             WHERE e.lead_id = l.id AND e.status = 'sent'
-             ORDER BY e.sent_at DESC LIMIT 1) AS last_email_type,
-            (SELECT u.name FROM email_outreach e
-             JOIN users u ON u.id = e.sent_by
-             WHERE e.lead_id = l.id AND e.status = 'sent'
-             ORDER BY e.sent_at DESC LIMIT 1) AS last_email_by
-        FROM leads l
-        WHERE {where}
-        ORDER BY
-            CASE WHEN l.email_sent_at IS NOT NULL THEN 0 ELSE 1 END,
-            l.email_sent_at DESC NULLS LAST,
-            l.score DESC NULLS LAST
-        LIMIT :limit OFFSET :offset
-    """), {**params, "limit": limit, "offset": offset}).fetchall()
-
-    # Summary counts for the filter tabs
-    counts = db.execute(text(f"""
-        SELECT
-            COUNT(*)                                    AS total,
-            COUNT(*) FILTER (WHERE email_sent_at IS NOT NULL) AS emailed,
-            COUNT(*) FILTER (WHERE email_sent_at IS NULL)     AS not_emailed
-        FROM leads
-        WHERE {where.replace("email_sent_at IS NOT NULL", "1=1")
-                     .replace("email_sent_at IS NULL", "1=1")}
-    """), {k: v for k, v in params.items()
-           if k not in ("email_sent_at",)}).fetchone()
-
-    return {
-        "total":    total,
-        "page":     page,
-        "limit":    limit,
-        "pages":    -(-total // limit) if total else 0,
-        "filter":   filter_by,
-        "counts": {
-            "all":         counts.total,
-            "emailed":     counts.emailed,
-            "not_emailed": counts.not_emailed,
-        },
-        "data": [
-            {
-                "id":               r.id,
-                "name":             r.name,
-                "owner_name":       r.owner_name,
-                "phone":            r.phone,
-                "email":            r.email,
-                "website":          r.website,
-                "area":             r.area,
-                "lead_type":        r.lead_type,
-                "score":            r.score,
-                "status":           r.status,
-                "assigned_to":      r.assigned_to,
-                "ai_score":         r.ai_score,
-                "last_contacted":   r.last_contacted.isoformat() if r.last_contacted else None,
-                "email_sent_at":    r.email_sent_at.isoformat() if r.email_sent_at else None,
-                "follow_up_date":   r.follow_up_date.isoformat() if r.follow_up_date else None,
-                "contact_attempts": r.contact_attempts or 0,
-                "last_email_sent_at": r.last_email_sent_at.isoformat() if r.last_email_sent_at else None,
-                "last_email_type":  r.last_email_type,
-                "last_email_by":    r.last_email_by,
-                "email_status":     "emailed" if r.email_sent_at else "not_emailed",
-            }
-            for r in rows
-        ],
     }
 
 

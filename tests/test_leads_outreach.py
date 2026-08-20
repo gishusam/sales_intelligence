@@ -131,3 +131,44 @@ def test_by_area_ignores_malformed_legacy_filter():
     assert response == [{"area": "Kilimani", "count": 12}]
     assert "lead_type = :lead_type" not in db.calls[0][0]
     assert db.calls[0][1] == {}
+
+
+def test_outreach_filters_area_and_search_server_side():
+    from app.routers import leads
+
+    count_row = SimpleNamespace(all=0, emailed=0, not_emailed=0)
+
+    class FakeDb:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params):
+            self.calls.append((str(statement), params))
+            if len(self.calls) == 1:
+                return Result(one=count_row)
+            return Result(rows=[])
+
+    db = FakeDb()
+
+    leads.get_outreach_leads(
+        lead_type="agency",
+        filter_by="all",
+        q="homes",
+        area="Pangani",
+        page=1,
+        limit=20,
+        db=db,
+    )
+
+    count_sql, count_params = db.calls[0]
+    rows_sql, rows_params = db.calls[1]
+
+    assert "LOWER(l.area) = LOWER(:area)" in count_sql
+    assert "l.name ILIKE :q" in count_sql
+
+    assert count_params["area"] == "Pangani"
+    assert count_params["q"] == "%homes%"
+
+    assert "LOWER(l.area) = LOWER(:area)" in rows_sql
+    assert rows_params["area"] == "Pangani"
+    assert rows_params["q"] == "%homes%"
