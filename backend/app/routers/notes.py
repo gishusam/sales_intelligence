@@ -118,9 +118,12 @@ async def score_with_llm(lead: dict, note: str) -> dict:
                 "Content-Type":  "application/json",
             },
             json={
-                "model":       GROQ_MODEL,
-                "messages":    [{"role": "user", "content": prompt}],
-                "max_tokens":  300,
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "reasoning_effort": "low",
+                "include_reasoning": False,
+                "response_format": {"type": "json_object"},
+                "max_completion_tokens": 1024,
                 "temperature": 0.1,
             }
         )
@@ -176,15 +179,17 @@ async def create_note(
     except Exception as e:
         logger.error(f"Groq scoring failed for lead {lead_id}: {e}")
         ai_result = {
-            "score":          "WARM_PROSPECT",
-            "reason":         f"AI scoring failed: {str(e)[:100]}",
-            "follow_up_days": 7,
+            "score":          None,
+            "reason":         "AI scoring unavailable — note saved but lead was not re-scored",
+            "follow_up_days": None,
             "signals":        [],
         }
 
-    follow_up_days = ai_result.get("follow_up_days", 7)
+    follow_up_days = ai_result.get("follow_up_days")
     follow_up_date = (
         datetime.now(timezone.utc).date() + timedelta(days=follow_up_days)
+        if follow_up_days is not None
+        else None
     )
 
     # Save note with AI score to lead_notes table
@@ -215,10 +220,13 @@ async def create_note(
         # Update lead's AI score + contact tracking
         db.execute(text("""
             UPDATE leads SET
-                ai_score         = :ai_score,
-                ai_score_reason  = :ai_score_reason,
-                ai_scored_at     = NOW(),
-                follow_up_date   = :follow_up_date,
+                ai_score         = COALESCE(:ai_score, ai_score),
+                ai_score_reason  = COALESCE(:ai_score_reason, ai_score_reason),
+                ai_scored_at     = CASE
+                    WHEN :ai_score IS NOT NULL THEN NOW()
+                    ELSE ai_scored_at
+                END,
+                follow_up_date   = COALESCE(:follow_up_date, follow_up_date),
                 last_contacted   = NOW(),
                 contact_attempts = COALESCE(contact_attempts, 0) + 1,
                 updated_at       = NOW()
@@ -226,7 +234,11 @@ async def create_note(
         """), {
             "id":              lead_id,
             "ai_score":        ai_result.get("score"),
-            "ai_score_reason": ai_result.get("reason"),
+            "ai_score_reason": (
+                ai_result.get("reason")
+                if ai_result.get("score") is not None
+                else None
+            ),
             "follow_up_date":  follow_up_date,
         })
     
@@ -251,7 +263,7 @@ async def create_note(
         "ai_score_label":  SCORE_DISPLAY.get(ai_result.get("score", ""), ""),
         "ai_score_reason": ai_result.get("reason"),
         "follow_up_days":  follow_up_days,
-        "follow_up_date":  follow_up_date.isoformat(),
+        "follow_up_date":  follow_up_date.isoformat() if follow_up_date else None,
         "signals":         ai_result.get("signals", []),
     }
 
