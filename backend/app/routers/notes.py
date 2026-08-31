@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api", tags=["notes"])
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
 
 VALID_SCORES = {
@@ -117,7 +118,7 @@ async def score_with_llm(lead: dict, note: str) -> dict:
                 "Content-Type":  "application/json",
             },
             json={
-                "model":       "llama-3.1-8b-instant",
+                "model":       GROQ_MODEL,
                 "messages":    [{"role": "user", "content": prompt}],
                 "max_tokens":  300,
                 "temperature": 0.1,
