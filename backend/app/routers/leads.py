@@ -428,10 +428,13 @@ def get_leads(
 
 @router.get("/leads/mine")
 def get_my_leads(
-    page:  int = Query(1, ge=1),
+    queue: str = Query("all"),
+    q: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    db:    Session = Depends(get_db),
-    user:  CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
 ):
     """
     Returns leads assigned to the current user.
@@ -440,23 +443,116 @@ def get_my_leads(
     """
     offset = (page - 1) * limit
 
-    total = db.execute(text("""
-        SELECT COUNT(*) FROM leads
-        WHERE assigned_to = :name OR assigned_to = :uid
-    """), {"name": user.name, "uid": str(user.id)}).scalar()
+    filters = ["(assigned_to = :name OR assigned_to = :uid)"]
+    params = {"name": user.name, "uid": str(user.id)}
 
-    rows = db.execute(text("""
+    counts_row = db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (
+                WHERE (
+                    (follow_up_date IS NOT NULL AND follow_up_date <= CURRENT_DATE)
+                    OR last_contacted IS NULL
+                    OR status = 'new'
+                )
+            ) AS needs_attention,
+            COUNT(*) FILTER (WHERE status = 'new') AS new,
+            COUNT(*) FILTER (WHERE last_contacted IS NULL) AS not_contacted,
+            COUNT(*) FILTER (
+                WHERE follow_up_date IS NOT NULL
+                  AND follow_up_date <= CURRENT_DATE
+            ) AS follow_up,
+            COUNT(*) FILTER (WHERE last_contacted IS NOT NULL) AS contacted,
+            COUNT(*) FILTER (WHERE status = 'demo_booked') AS demo_booked
+        FROM leads
+        WHERE assigned_to = :name OR assigned_to = :uid
+    """), params).fetchone()
+
+    counts = {
+        "needs_attention": counts_row.needs_attention or 0,
+        "new": counts_row.new or 0,
+        "not_contacted": counts_row.not_contacted or 0,
+        "follow_up": counts_row.follow_up or 0,
+        "contacted": counts_row.contacted or 0,
+        "demo_booked": counts_row.demo_booked or 0,
+    }
+
+    order_by = "score DESC NULLS LAST, created_at DESC"
+
+    if queue == "not_contacted":
+        filters.append("last_contacted IS NULL")
+    elif queue == "follow_up":
+        filters.append("follow_up_date IS NOT NULL")
+        filters.append("follow_up_date <= CURRENT_DATE")
+        order_by = "follow_up_date ASC NULLS LAST, score DESC NULLS LAST, created_at DESC"
+    elif queue == "new":
+        filters.append("status = 'new'")
+        order_by = "created_at DESC"
+    elif queue == "contacted":
+        filters.append("last_contacted IS NOT NULL")
+        order_by = "last_contacted DESC NULLS LAST, score DESC NULLS LAST, created_at DESC"
+    elif queue == "demo_booked":
+        filters.append("status = 'demo_booked'")
+    elif queue == "needs_attention":
+        filters.append("""
+            (
+                (follow_up_date IS NOT NULL AND follow_up_date <= CURRENT_DATE)
+                OR last_contacted IS NULL
+                OR status = 'new'
+            )
+        """)
+        order_by = """
+            CASE
+                WHEN follow_up_date IS NOT NULL
+                     AND follow_up_date <= CURRENT_DATE THEN 1
+                WHEN last_contacted IS NULL THEN 2
+                WHEN status = 'new' THEN 3
+                ELSE 4
+            END,
+            follow_up_date ASC NULLS LAST,
+            score DESC NULLS LAST,
+            created_at DESC
+        """
+
+    if q and q.strip():
+        filters.append("""
+            (
+                name ILIKE :q
+                OR owner_name ILIKE :q
+                OR area ILIKE :q
+                OR phone ILIKE :q
+                OR email ILIKE :q
+            )
+        """)
+        params["q"] = f"%{q.strip()}%"
+
+    if status:
+        filters.append("status = :status")
+        params["status"] = status
+
+    where = " AND ".join(filters)
+
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM leads WHERE {where}"),
+        params,
+    ).scalar()
+
+    rows = db.execute(text(f"""
         SELECT id, name, owner_name, phone, email, website,
                area, lead_type, source, score, status,
                notes, assigned_to, last_contacted, created_at, updated_at
         FROM leads
-        WHERE assigned_to = :name OR assigned_to = :uid
-        ORDER BY score DESC, created_at DESC
+        WHERE {where}
+        ORDER BY {order_by}
         LIMIT :limit OFFSET :offset
-    """), {"name": user.name, "uid": str(user.id), "limit": limit, "offset": offset}).fetchall()
+    """), {
+        **params,
+        "limit": limit,
+        "offset": offset,
+    }).fetchall()
 
     return {
         "total": total, "page": page, "limit": limit,
+        "counts": counts,
         "pages": -(-total // limit),
         "data": [
             {
