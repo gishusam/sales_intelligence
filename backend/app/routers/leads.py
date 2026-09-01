@@ -141,6 +141,66 @@ def get_activity(db: Session = Depends(get_db)):
     ]
 
 
+# ── Sales team performance ───────────────────────────────────────
+
+@router.get("/dashboard/team-performance")
+def get_team_performance(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        WITH monthly_assignments AS (
+            SELECT
+                e.lead_id,
+                e.to_value AS rep_name,
+                MIN(e.created_at) AS assigned_at
+            FROM lead_events e
+            WHERE e.event_type = 'assigned'
+              AND e.created_at >= date_trunc('month', CURRENT_DATE)
+              AND e.created_at < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+              AND e.to_value IS NOT NULL
+            GROUP BY e.lead_id, e.to_value
+        )
+        SELECT
+            u.name AS name,
+            COUNT(DISTINCT ma.lead_id) AS new_leads,
+            COUNT(DISTINCT ma.lead_id) FILTER (
+                WHERE s.to_value = 'called'
+            ) AS called,
+            COUNT(DISTINCT ma.lead_id) FILTER (
+                WHERE s.to_value = 'demo_booked'
+            ) AS demos,
+            COUNT(DISTINCT ma.lead_id) FILTER (
+                WHERE s.to_value = 'won'
+            ) AS won
+        FROM users u
+        LEFT JOIN monthly_assignments ma
+          ON ma.rep_name = u.name
+        LEFT JOIN lead_events s
+          ON s.lead_id = ma.lead_id
+         AND s.event_type = 'status_change'
+         AND s.created_at >= ma.assigned_at
+         AND s.created_at >= date_trunc('month', CURRENT_DATE)
+         AND s.created_at < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'
+        WHERE u.is_active = TRUE
+          AND u.role IN ('sales', 'manager', 'admin')
+        GROUP BY u.id, u.name
+        ORDER BY won DESC, demos DESC, called DESC, new_leads DESC, u.name
+    """)).fetchall()
+
+    return [
+        {
+            "name": r.name,
+            "new_leads": r.new_leads or 0,
+            "called": r.called or 0,
+            "demos": r.demos or 0,
+            "won": r.won or 0,
+            "conversion": round((r.won or 0) / r.new_leads * 100, 1)
+            if r.new_leads
+            else 0.0,
+        }
+        for r in rows
+        if any((r.new_leads, r.called, r.demos, r.won))
+    ]
+
+
 # ── FEATURE 2: Lead type summary strip ────────────────────────────
 # Powers the strip at the top of the leads page showing:
 # Apartments: 211 total | 45 contacted | 12 won
@@ -819,6 +879,7 @@ def update_status(
     lead_id: int,
     body:    StatusUpdate,
     db:      Session = Depends(get_db),
+    user:    CurrentUser = Depends(get_current_user),
 ):
     if body.status not in VALID_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {VALID_STATUSES}")
@@ -850,7 +911,6 @@ def update_status(
         "notes":       body.notes,
         "assigned_to": body.assigned_to,
     })
-    db.commit()
 
     row = result.fetchone()
 
@@ -865,7 +925,7 @@ def update_status(
             "lead_id":    lead_id,
             "from_val":   current.status,
             "to_val":     body.status,
-            "changed_by": body.changed_by or body.assigned_to or "system",
+            "changed_by": user.name,
             "note":       body.notes,
         })
 
