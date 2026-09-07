@@ -39,6 +39,7 @@ class DetailDB:
                     name="Kilimani Demo",
                     subject="Nyumba Zetu Demo",
                     body="Hello",
+                    html_body=None,
                     sender_name="Nyumba Zetu",
                     sender_email="sales@nyumbazetu.com",
                     reply_to=None,

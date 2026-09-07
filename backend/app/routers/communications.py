@@ -276,6 +276,7 @@ def build_resend_payload(
     from_name: str,
     subject: str,
     body: str,
+    html_body: Optional[str] = None,
     reply_to: Optional[str] = None,
     attachment_name: Optional[str] = None,
     attachment_content: Optional[bytes] = None,
@@ -287,6 +288,9 @@ def build_resend_payload(
         "subject": subject,
         "text": body,
     }
+
+    if html_body:
+        payload["html"] = html_body
 
     if reply_to:
         payload["reply_to"] = reply_to
@@ -309,7 +313,9 @@ async def send_via_resend(
     from_name:   str,
     subject:     str,
     body:        str,
+    html_body:   Optional[str] = None,
     reply_to:    Optional[str] = None,
+    append_unsubscribe_footer: bool = True,
     attachment_name: Optional[str] = None,
     attachment_content: Optional[bytes] = None,
 ) -> dict:
@@ -332,14 +338,22 @@ async def send_via_resend(
         from_name=from_name,
         subject=subject,
         body=body,
+        html_body=html_body,
         reply_to=reply_to,
         attachment_name=attachment_name,
         attachment_content=attachment_content,
     )
 
-    # Add unsubscribe link to body
-    unsubscribe_url = f"{app_url}/unsubscribe?email={to_email}"
-    payload["text"] += f"\n\n---\nTo unsubscribe, visit: {unsubscribe_url}"
+    # Cold outreach gets the standard plain-text unsubscribe footer.
+    # Newsletter text/html already contains its own personalized footer.
+    if append_unsubscribe_footer:
+        unsubscribe_url = (
+            f"{app_url}/unsubscribe?email={to_email}"
+        )
+        payload["text"] += (
+            f"\n\n---\nTo unsubscribe, visit: "
+            f"{unsubscribe_url}"
+        )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
@@ -370,6 +384,7 @@ class CampaignCreate(BaseModel):
     name:            str
     subject:         str
     body:            str
+    html_body:       Optional[str] = None
     communication_type: Literal["cold_outreach", "newsletter"]
     sender_name:     str = "Nyumba Zetu"
     sender_email:    str = "onboarding@resend.dev"
@@ -382,6 +397,7 @@ class CampaignCreate(BaseModel):
 class CampaignUpdate(BaseModel):
     subject: Optional[str] = None
     body: Optional[str] = None
+    html_body: Optional[str] = None
     sender_name: Optional[str] = None
     sender_email: Optional[str] = None
     reply_to: Optional[str] = None
@@ -721,12 +737,12 @@ def create_campaign(
 
     row = db.execute(text("""
         INSERT INTO campaigns (
-            name, subject, body, communication_type,
+            name, subject, body, html_body, communication_type,
             sender_name, sender_email,
             reply_to, recipient_type, mailing_list_id,
             recipient_filter, status, created_by
         ) VALUES (
-            :name, :subject, :body, :communication_type,
+            :name, :subject, :body, :html_body, :communication_type,
             :sender_name, :sender_email,
             :reply_to, :recipient_type, :mailing_list_id,
             :recipient_filter, 'draft', :created_by
@@ -736,6 +752,7 @@ def create_campaign(
         "name":             body.name,
         "subject":          body.subject,
         "body":             body.body,
+        "html_body":          body.html_body,
         "communication_type": body.communication_type,
         "sender_name":      body.sender_name,
         "sender_email":     body.sender_email,
@@ -1024,6 +1041,7 @@ def get_campaign(
         "name":             row.name,
         "subject":          row.subject,
         "body":             row.body,
+        "html_body":        row.html_body,
         "sender_name":      row.sender_name,
         "sender_email":     row.sender_email,
         "reply_to":         row.reply_to,
@@ -1378,16 +1396,32 @@ async def _send_campaign_emails(campaign_id: int, db_url: str):
         failed_count = 0
 
         for r in recipients:
+            unsubscribe_url = (
+                f"{_get_app_url()}/unsubscribe?email={r['email']}"
+            )
+
             context = {
                 "contact_name": r["name"] or "Property Manager",
                 "company_name": r["name"] or "your company",
                 "rep_name":     campaign["created_by"],
                 "rep_email":    campaign["sender_email"],
                 "area":         "",
+                "unsubscribe_url": unsubscribe_url,
             }
 
-            personalised_body    = personalise(campaign["body"], context)
-            personalised_subject = personalise(campaign["subject"], context)
+            personalised_body = personalise(
+                campaign["body"],
+                context,
+            )
+            personalised_subject = personalise(
+                campaign["subject"],
+                context,
+            )
+            personalised_html = (
+                personalise(campaign["html_body"], context)
+                if campaign.get("html_body")
+                else None
+            )
 
             try:
                 result = await send_via_resend(
@@ -1397,7 +1431,12 @@ async def _send_campaign_emails(campaign_id: int, db_url: str):
                     from_name  = campaign["sender_name"],
                     subject    = personalised_subject,
                     body       = personalised_body,
+                    html_body  = personalised_html,
                     reply_to   = campaign.get("reply_to"),
+                    append_unsubscribe_footer=(
+                        campaign.get("communication_type")
+                        != "newsletter"
+                    ),
                     **campaign_attachment_send_kwargs(campaign),
                 )
 
