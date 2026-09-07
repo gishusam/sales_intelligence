@@ -1,0 +1,2 @@
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS can_manage_communication_templates BOOLEAN NOT NULL DEFAULT FALSE;

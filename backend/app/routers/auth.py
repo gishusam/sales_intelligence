@@ -35,7 +35,14 @@ class ResetPasswordRequest(BaseModel):
 @router.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     row = db.execute(text("""
-        SELECT id, name, email, password_hash, role, must_change_password
+        SELECT
+            id,
+            name,
+            email,
+            password_hash,
+            role,
+            must_change_password,
+            can_manage_communication_templates
         FROM users
         WHERE email = :email AND is_active = TRUE
     """), {"email": body.email.lower().strip()}).fetchone()
@@ -51,6 +58,9 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         "name":    row.name,
         "email":   row.email,
         "role":    row.role,
+        "can_manage_communication_templates": bool(
+            row.can_manage_communication_templates
+        ),
     })
 
     return {
@@ -62,6 +72,9 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             "name":  row.name,
             "email": row.email,
             "role":  row.role,
+            "can_manage_communication_templates": bool(
+                row.can_manage_communication_templates
+            ),
         }
     }
 
@@ -74,7 +87,13 @@ def get_me(
     db:   Session     = Depends(get_db),
 ):
     row = db.execute(text("""
-        SELECT id, name, email, role, must_change_password
+        SELECT
+            id,
+            name,
+            email,
+            role,
+            must_change_password,
+            can_manage_communication_templates
         FROM users WHERE id = :id
     """), {"id": user.id}).fetchone()
 
@@ -87,6 +106,9 @@ def get_me(
         "email":                row.email,
         "role":                 row.role,
         "must_change_password": bool(row.must_change_password),
+        "can_manage_communication_templates": bool(
+            row.can_manage_communication_templates
+        ),
     }
 
 

@@ -1,14 +1,3 @@
-"""
-email.py — Email outreach + follow-up system with attachment support
-
-Endpoints:
-    POST /api/leads/{id}/email/preview        — generate preview
-    POST /api/leads/{id}/email/send           — send with optional attachment
-    POST /api/leads/{id}/email/send-with-file — send with file upload
-    GET  /api/leads/{id}/emails               — email history
-    GET  /api/emails/outreach                 — manager view
-"""
-
 import os
 import logging
 import smtplib
@@ -33,12 +22,27 @@ router = APIRouter(prefix="/api", tags=["email"])
 logger = logging.getLogger(__name__)
 
 # ── SMTP config from environment ──────────────────────────────────
-SMTP_HOST      = os.getenv("SMTP_HOST", "")
-SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER      = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD  = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Nyumba Zetu Sales")
-MOCK_MODE      = not bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD)
+def _smtp_config() -> dict:
+    """Read SMTP config dynamically to avoid module-import timing issues."""
+    try:
+        from app.config import settings
+        host     = getattr(settings, "SMTP_HOST", "") or os.getenv("SMTP_HOST", "")
+        port     = int(getattr(settings, "SMTP_PORT", 587) or os.getenv("SMTP_PORT", "587"))
+        user     = getattr(settings, "SMTP_USER", "") or os.getenv("SMTP_USER", "")
+        password = getattr(settings, "SMTP_PASSWORD", "") or os.getenv("SMTP_PASSWORD", "")
+        name     = getattr(settings, "SMTP_FROM_NAME", "") or os.getenv("SMTP_FROM_NAME", "Nyumba Zetu Sales")
+    except Exception:
+        host     = os.getenv("SMTP_HOST", "")
+        port     = int(os.getenv("SMTP_PORT", "587"))
+        user     = os.getenv("SMTP_USER", "")
+        password = os.getenv("SMTP_PASSWORD", "")
+        name     = os.getenv("SMTP_FROM_NAME", "Nyumba Zetu Sales")
+    return {
+        "host": host, "port": port,
+        "user": user, "password": password,
+        "from_name": name,
+        "mock_mode": not bool(host and user and password),
+    }
 
 
 # ── Templates ─────────────────────────────────────────────────────
@@ -150,7 +154,6 @@ def fill_template(template: dict, context: dict) -> dict:
 def load_templates_from_db(db) -> dict:
     """Load single cold + followup template from DB settings."""
     try:
-        from sqlalchemy import text
         rows = db.execute(text("""
             SELECT key, value FROM email_settings
             WHERE key IN (
@@ -213,7 +216,9 @@ def send_smtp(
     Send email via SMTP with optional attachment.
     In mock mode logs the email without sending.
     """
-    if MOCK_MODE:
+    cfg = _smtp_config()
+
+    if cfg["mock_mode"]:
         logger.info(
             f"[MOCK] From:{from_email} → To:{to_email} | "
             f"{subject[:50]} | attachment:{attachment_name or 'none'}"
@@ -223,7 +228,7 @@ def send_smtp(
     try:
         msg = MIMEMultipart()
         msg["Subject"] = subject
-        msg["From"]    = f"{SMTP_FROM_NAME} <{from_email}>"
+        msg["From"]    = f"{cfg['from_name']} <{from_email}>"
         msg["To"]      = to_email
         msg["Reply-To"] = from_email
 
@@ -240,9 +245,9 @@ def send_smtp(
             )
             msg.attach(part)
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(cfg["host"], cfg["port"]) as server:
             server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.login(cfg["user"], cfg["password"])
             server.sendmail(from_email, to_email, msg.as_string())
 
         logger.info(
@@ -310,8 +315,8 @@ def preview_email(
             if db_templates and db_templates.get("cold")
             else None
         )
-        template      = db_cold or COLD_TEMPLATES["template_1"]
-        template_name = "cold"
+        template      = db_cold or COLD_TEMPLATES.get(body.template_name, COLD_TEMPLATES["template_1"])
+        template_name = body.template_name if body.template_name in COLD_TEMPLATES else "cold"
 
     filled     = fill_template(template, context)
     final_body = body.custom_body or filled["body"]
@@ -343,10 +348,12 @@ def preview_email(
     }).fetchone()
     db.commit()
 
+    cfg = _smtp_config()
+
     return {
         "email_id":       row.id,
         "from":           user.email,
-        "from_display":   f"{SMTP_FROM_NAME} <{user.email}>",
+        "from_display":   f"{cfg['from_name']} <{user.email}>",
         "to":             lead.get("email"),
         "to_name":        context["contact_name"],
         "company":        lead.get("name"),
@@ -357,8 +364,8 @@ def preview_email(
         "has_email":      bool(lead.get("email")),
         "follow_up_date": follow_up_date,
         "status":         "draft",
-        "mock_mode":      MOCK_MODE,
-        "smtp_configured": not MOCK_MODE,
+        "mock_mode":      cfg["mock_mode"],
+        "smtp_configured": not cfg["mock_mode"],
         "available_templates": list(COLD_TEMPLATES.keys()),
     }
 
@@ -407,6 +414,8 @@ def send_email(
         attachment_name = body.attachment_name,
     )
     status = "sent" if sent else "failed"
+
+    cfg = _smtp_config()
 
     # Update draft
     db.execute(text("""
@@ -462,10 +471,10 @@ def send_email(
         "has_attachment":  bool(attachment_data),
         "attachment_name": body.attachment_name,
         "follow_up_date":  draft.follow_up_date.isoformat() if draft.follow_up_date else None,
-        "mock_mode":       MOCK_MODE,
+        "mock_mode":       cfg["mock_mode"],
         "message": (
             "Email logged — set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env to send real emails"
-            if MOCK_MODE else
+            if cfg["mock_mode"] else
             f"Email sent to {to_email}"
             + (f" with {body.attachment_name}" if body.attachment_name else "")
         ),
@@ -521,6 +530,8 @@ async def send_email_with_file(
     )
     status = "sent" if sent else "failed"
 
+    cfg = _smtp_config()
+
     db.execute(text("""
         UPDATE email_outreach SET
             body    = :body,
@@ -566,10 +577,10 @@ async def send_email_with_file(
         "has_attachment":  bool(attachment_data),
         "attachment_name": attachment_name,
         "follow_up_date":  draft.follow_up_date.isoformat() if draft.follow_up_date else None,
-        "mock_mode":       MOCK_MODE,
+        "mock_mode":       cfg["mock_mode"],
         "message": (
             "Email logged in mock mode"
-            if MOCK_MODE else
+            if cfg["mock_mode"] else
             f"Email sent to {recipient}"
         ),
     }
@@ -654,16 +665,17 @@ def get_email_config(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Returns current email configuration status — no secrets exposed."""
+    cfg = _smtp_config()
     return {
-        "mock_mode":       MOCK_MODE,
-        "smtp_configured": not MOCK_MODE,
-        "smtp_host":       SMTP_HOST or "not set",
-        "smtp_user":       SMTP_USER or "not set",
-        "from_name":       SMTP_FROM_NAME,
+        "mock_mode":       cfg["mock_mode"],
+        "smtp_configured": not cfg["mock_mode"],
+        "smtp_host":       cfg["host"] or "not set",
+        "smtp_user":       cfg["user"] or "not set",
+        "from_name":       cfg["from_name"],
         "message": (
             "Running in mock mode — emails logged but not sent. "
             "Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env to enable."
-        ) if MOCK_MODE else (
-            f"SMTP configured — sending from {SMTP_USER}"
+        ) if cfg["mock_mode"] else (
+            f"SMTP configured — sending from {cfg['user']}"
         ),
     }

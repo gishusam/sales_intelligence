@@ -8,7 +8,10 @@ from app.routers import notes
 from app.routers import auth 
 from app.routers import scraper
 from app.routers import reports
+from app.routers import communications
 from app.routers import email as email_router
+from app.routers import resend_webhooks
+from app.routers import settings as settings_router
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 
@@ -34,7 +37,11 @@ app.include_router(notes.router)
 app.include_router(auth.router)
 app.include_router(scraper.router)
 app.include_router(reports.router)
+app.include_router(communications.router)
+app.include_router(resend_webhooks.router)
+app.include_router(settings_router.router)
 app.include_router(email_router.router)
+
 
 
 
