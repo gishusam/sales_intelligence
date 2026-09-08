@@ -23,6 +23,14 @@ from app.auth import get_current_user, CurrentUser
 router = APIRouter(prefix="/api", tags=["leads"])
 
 
+def _serialize_datetime(value):
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 # ── Pydantic schemas ───────────────────────────────────────────────
 
 class StatusUpdate(BaseModel):
@@ -621,9 +629,9 @@ def get_my_leads(
                 "area": r.area, "lead_type": r.lead_type, "source": r.source,
                 "score": r.score, "status": r.status, "notes": r.notes,
                 "assigned_to": r.assigned_to,
-                "last_contacted": r.last_contacted.isoformat() if r.last_contacted else None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "last_contacted": _serialize_datetime(r.last_contacted),
+                "created_at": _serialize_datetime(r.created_at),
+                "updated_at": _serialize_datetime(r.updated_at),
             }
             for r in rows
         ]

@@ -12,6 +12,7 @@ from app.routers import communications
 from app.routers import email as email_router
 from app.routers import resend_webhooks
 from app.routers import settings as settings_router
+from app.routers import apollo
 
 Base.metadata.create_all(bind=engine, checkfirst=True)
 
@@ -41,6 +42,7 @@ app.include_router(communications.router)
 app.include_router(resend_webhooks.router)
 app.include_router(settings_router.router)
 app.include_router(email_router.router)
+app.include_router(apollo.router)
 
 
 

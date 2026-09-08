@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Groq
     GROQ_API_KEY: str = ""
 
+    # Apollo
+    APOLLO_API_KEY: str = ""
+
     ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"
         "http://127.0.0.1:8080,"
