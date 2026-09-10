@@ -226,6 +226,100 @@ def test_search_prospects_attaches_decision_makers(monkeypatch):
     ]
 
 
+
+def test_search_prospects_attaches_person_when_apollo_omits_organization_id(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        settings,
+        "APOLLO_API_KEY",
+        "test-apollo-key",
+    )
+
+    class FakeApolloClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+
+        def search_organizations(
+            self,
+            locations,
+            employee_ranges,
+            keywords,
+            page,
+            per_page,
+        ):
+            return {
+                "organizations": [
+                    {
+                        "id": "org-123",
+                        "name": "Centum Real Estate",
+                        "primary_domain": None,
+                        "website_url": None,
+                        "linkedin_url": "https://linkedin.com/company/centum-re",
+                    }
+                ],
+                "pagination": {
+                    "page": 1,
+                    "per_page": 25,
+                    "total_entries": 1,
+                },
+            }
+
+        def search_people(
+            self,
+            organization_ids,
+            titles,
+            seniorities,
+            page,
+            per_page,
+        ):
+            return {
+                "people": [
+                    {
+                        "id": "person-123",
+                        "first_name": "Kenneth",
+                        "title": "Managing Director",
+                        "organization": {
+                            "name": "Centum Real Estate",
+                        },
+                    }
+                ],
+                "total_entries": 1,
+            }
+
+    monkeypatch.setattr(
+        apollo_router,
+        "ApolloClient",
+        FakeApolloClient,
+    )
+
+    monkeypatch.setattr(
+        apollo_router,
+        "persist_discovered_prospect",
+        lambda db, prospect: None,
+    )
+
+    request = ProspectSearchRequest(
+        locations=["Kenya"],
+        business_types=["real estate"],
+        employee_min=1,
+        employee_max=100,
+        decision_maker_titles=["Managing Director"],
+        decision_maker_seniorities=[],
+    )
+
+    response = apollo_router.search_prospects(
+        request,
+        db=NoopDb(),
+    )
+
+    decision_makers = response["prospects"][0]["decision_makers"]
+
+    assert len(decision_makers) == 1
+    assert decision_makers[0]["apollo_person_id"] == "person-123"
+    assert decision_makers[0]["apollo_organization_id"] == "org-123"
+    assert decision_makers[0]["title"] == "Managing Director"
+
 def test_search_prospects_returns_quality_scoring(monkeypatch):
     monkeypatch.setattr(
         settings,

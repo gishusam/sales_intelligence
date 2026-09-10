@@ -101,9 +101,39 @@ def search_prospects(
 
             people_by_organization = {}
 
+            organization_ids_by_name = {
+                organization["name"].strip().casefold():
+                organization["id"]
+                for organization in organizations
+                if organization.get("name")
+                and organization.get("id")
+            }
+
             for raw_person in people_result.get("people", []):
                 person = normalize_person(raw_person)
                 organization_id = person["apollo_organization_id"]
+
+                if not organization_id:
+                    organization_name = (
+                        raw_person.get("organization") or {}
+                    ).get("name")
+
+                    if organization_name:
+                        organization_id = (
+                            organization_ids_by_name.get(
+                                organization_name
+                                .strip()
+                                .casefold()
+                            )
+                        )
+
+                        if organization_id:
+                            person["apollo_organization_id"] = (
+                                organization_id
+                            )
+
+                if not organization_id:
+                    continue
 
                 people_by_organization.setdefault(
                     organization_id,
@@ -122,10 +152,14 @@ def search_prospects(
         prospect.update(
             score_prospect(prospect)
         )
-        persist_discovered_prospect(
+        persisted = persist_discovered_prospect(
             db,
             prospect,
         )
+
+        if persisted is not None:
+            prospect["id"] = persisted.id
+            prospect["review_status"] = persisted.review_status
 
     db.commit()
 

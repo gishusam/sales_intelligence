@@ -99,6 +99,11 @@ def test_search_persists_returned_prospect_as_discovered(monkeypatch):
 
     saved = db.query(ApolloProspect).one()
 
+    returned = response.json()["prospects"][0]
+
+    assert returned["id"] == saved.id
+    assert returned["review_status"] == "discovered"
+
     assert saved.apollo_organization_id == "org-700"
     assert saved.name == "Nairobi Property Managers"
     assert saved.review_status == "discovered"
