@@ -436,3 +436,61 @@ def test_contact_enrichment_webhook_persists_email_and_phone():
     assert kenneth.name == "Kenneth Mbae"
     assert kenneth.title == "Managing Director"
     assert kenneth.enrichment_status == "enriched"
+
+
+def test_contact_webhook_marks_contact_complete_with_email_and_phone():
+    from app.services.apollo_enrichment import (
+        apply_contact_details_webhook,
+    )
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-contact-complete",
+        name="Westlands Property Managers",
+        normalized_name="westlands property managers",
+        review_status="enriched",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-contact-complete",
+        name="Jane Manager",
+        title="Managing Director",
+        enrichment_status="enriched",
+        contact_enrichment_status="pending",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    apply_contact_details_webhook(
+        db,
+        {
+            "people": [
+                {
+                    "id": "person-contact-complete",
+                    "emails": [
+                        {
+                            "email": "jane@example.com",
+                        }
+                    ],
+                    "phone_numbers": [
+                        {
+                            "sanitized_number": "+254700000000",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    db.commit()
+    db.refresh(contact)
+
+    assert contact.email == "jane@example.com"
+    assert contact.phone == "+254700000000"
+    assert contact.contact_enrichment_status == "complete"

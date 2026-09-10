@@ -329,6 +329,20 @@ def test_move_prospect_to_review_queue_changes_enriched_to_pending_review():
     )
 
     db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-review-ready",
+        name="Jane Manager",
+        title="Managing Director",
+        email="jane@example.com",
+        phone="+254700000000",
+        enrichment_status="enriched",
+        contact_enrichment_status="complete",
+    )
+
+    db.add(contact)
     db.commit()
 
     updated = move_prospect_to_review_queue(
@@ -800,3 +814,48 @@ def test_research_does_not_degrade_enriched_prospect_or_contact():
     )
     assert contact.email == "kenneth@example.com"
     assert contact.enrichment_status == "enriched"
+
+
+def test_review_requires_sales_ready_email_and_phone():
+    import pytest
+
+    from app.services.apollo_persistence import (
+        move_prospect_to_review_queue,
+    )
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-no-contact",
+        name="Incomplete Property Manager",
+        normalized_name="incomplete property manager",
+        review_status="enriched",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-no-contact",
+        name="Jane Manager",
+        title="Managing Director",
+        email="jane@example.com",
+        phone=None,
+        enrichment_status="enriched",
+        contact_enrichment_status="partial",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    with pytest.raises(
+        ValueError,
+        match="email and phone",
+    ):
+        move_prospect_to_review_queue(
+            db,
+            prospect.id,
+        )
+
+    assert prospect.review_status == "enriched"

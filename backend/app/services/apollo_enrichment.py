@@ -282,6 +282,13 @@ def apply_contact_details_webhook(
             phone=phone,
         )
 
+        if contact.email and contact.phone:
+            contact.contact_enrichment_status = "complete"
+        elif contact.email or contact.phone:
+            contact.contact_enrichment_status = "partial"
+        else:
+            contact.contact_enrichment_status = "not_found"
+
         prospect = (
             db.query(ApolloProspect)
             .filter(

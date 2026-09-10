@@ -49,6 +49,20 @@ def test_move_enriched_prospect_to_review_queue_endpoint():
         review_status="enriched",
     )
     db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-review-http",
+        name="Jane Manager",
+        title="Managing Director",
+        email="jane@example.com",
+        phone="+254700000000",
+        enrichment_status="enriched",
+        contact_enrichment_status="complete",
+    )
+
+    db.add(contact)
     db.commit()
 
     prospect_id = prospect.id

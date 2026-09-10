@@ -287,6 +287,25 @@ def move_prospect_to_review_queue(
             "prospect to review queue"
         )
 
+    sales_ready_contact = (
+        db.query(ApolloProspectContact)
+        .filter(
+            ApolloProspectContact.prospect_id
+            == prospect.id,
+            ApolloProspectContact.enrichment_status
+            == "enriched",
+            ApolloProspectContact.email.isnot(None),
+            ApolloProspectContact.phone.isnot(None),
+        )
+        .first()
+    )
+
+    if sales_ready_contact is None:
+        raise ValueError(
+            "prospect must have both email and phone "
+            "before review"
+        )
+
     prospect.review_status = "pending_review"
 
     db.flush()
