@@ -281,3 +281,70 @@ def test_successful_import_marks_prospect_imported_and_repeat_reuses_lead():
     db.refresh(prospect)
     assert prospect.review_status == "imported"
     assert prospect.imported_lead_id == first.id
+
+
+def test_import_uses_enriched_decision_maker_not_first_discovered_contact():
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-contact-selection",
+        name="Selection Property Managers",
+        normalized_name="selection property managers",
+        website_url="https://selection.example.com",
+        city="Nairobi",
+        quality_score=92,
+        quality_band="high",
+        review_status="approved",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    # This contact was discovered first, but was NOT the
+    # decision-maker selected for enrichment.
+    weaker_contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-operations",
+        name="John Operations",
+        title="Operations Manager",
+        seniority="manager",
+        email=None,
+        enrichment_status="not_enriched",
+    )
+
+    # This is the decision-maker our enrichment workflow selected.
+    enriched_contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-md",
+        first_name="Kenneth",
+        last_name="Mbae",
+        name="Kenneth Mbae",
+        title="Managing Director",
+        seniority="c_suite",
+        linkedin_url=(
+            "http://www.linkedin.com/in/"
+            "kenneth-mbae-0b5b17a4"
+        ),
+        email="kenneth@example.com",
+        enrichment_status="enriched",
+    )
+
+    db.add(weaker_contact)
+    db.flush()
+
+    db.add(enriched_contact)
+    db.commit()
+
+    lead = import_prospect_to_my_leads(
+        db,
+        prospect.id,
+        assigned_to="Sales Rep",
+    )
+
+    db.commit()
+
+    assert lead.contact_person == "Kenneth Mbae"
+    assert lead.contact_person_role == "Managing Director"
+    assert lead.email == "kenneth@example.com"
+
+    assert lead.contact_person != "John Operations"

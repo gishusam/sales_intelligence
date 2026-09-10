@@ -356,7 +356,11 @@ def import_prospect_to_my_leads(
 
     contact = (
         db.query(ApolloProspectContact)
-        .filter(ApolloProspectContact.prospect_id == prospect.id)
+        .filter(
+            ApolloProspectContact.prospect_id == prospect.id,
+            ApolloProspectContact.enrichment_status == "enriched",
+        )
+        .order_by(ApolloProspectContact.id)
         .first()
     )
 
