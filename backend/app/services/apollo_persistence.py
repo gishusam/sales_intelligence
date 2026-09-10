@@ -33,6 +33,8 @@ def normalize_company_name(name: str | None) -> str | None:
 def upsert_prospect(
     db: Session,
     data: dict,
+    *,
+    preserve_existing_enriched: bool = False,
 ) -> ApolloProspect:
     apollo_organization_id = data.get("apollo_organization_id")
 
@@ -74,6 +76,8 @@ def upsert_prospect(
             .first()
         )
 
+    existing_prospect = prospect is not None
+
     if prospect is None:
         prospect = ApolloProspect(
             apollo_organization_id=apollo_organization_id,
@@ -88,11 +92,46 @@ def upsert_prospect(
     ):
         prospect.apollo_organization_id = apollo_organization_id
 
-    for field in PROSPECT_UPDATE_FIELDS:
-        if field in data:
-            setattr(prospect, field, data[field])
+    preserve_enriched = (
+        preserve_existing_enriched
+        and existing_prospect
+        and prospect.review_status != "discovered"
+    )
 
-    if "name" in data:
+    enrichment_score_fields = {
+        "quality_score",
+        "quality_band",
+        "score_breakdown",
+        "score_reasons",
+    }
+
+    for field in PROSPECT_UPDATE_FIELDS:
+        if field not in data:
+            continue
+
+        value = data[field]
+
+        if value is None:
+            continue
+
+        if (
+            preserve_enriched
+            and field in enrichment_score_fields
+        ):
+            continue
+
+        if (
+            preserve_enriched
+            and getattr(prospect, field) is not None
+        ):
+            continue
+
+        setattr(prospect, field, value)
+
+    if data.get("name") and (
+        not preserve_enriched
+        or not prospect.normalized_name
+    ):
         prospect.normalized_name = normalize_company_name(
             data["name"]
         )
@@ -155,6 +194,8 @@ def upsert_prospect_contact(
     db: Session,
     prospect: ApolloProspect,
     data: dict,
+    *,
+    preserve_existing_enriched: bool = False,
 ) -> ApolloProspectContact:
     apollo_person_id = data.get("apollo_person_id")
 
@@ -171,6 +212,8 @@ def upsert_prospect_contact(
             .first()
         )
 
+    existing_contact = contact is not None
+
     if contact is None:
         contact = ApolloProspectContact(
             prospect_id=prospect.id,
@@ -178,9 +221,28 @@ def upsert_prospect_contact(
         )
         db.add(contact)
 
+    preserve_enriched_contact = (
+        preserve_existing_enriched
+        and existing_contact
+        and contact.enrichment_status == "enriched"
+    )
+
     for field in CONTACT_UPDATE_FIELDS:
-        if field in data:
-            setattr(contact, field, data[field])
+        if field not in data:
+            continue
+
+        value = data[field]
+
+        if value is None:
+            continue
+
+        if (
+            preserve_enriched_contact
+            and getattr(contact, field) is not None
+        ):
+            continue
+
+        setattr(contact, field, value)
 
     db.flush()
 
@@ -192,13 +254,18 @@ def persist_discovered_prospect(
     db: Session,
     data: dict,
 ) -> ApolloProspect:
-    prospect = upsert_prospect(db, data)
+    prospect = upsert_prospect(
+        db,
+        data,
+        preserve_existing_enriched=True,
+    )
 
     for contact_data in data.get("decision_makers", []):
         upsert_prospect_contact(
             db,
             prospect,
             contact_data,
+            preserve_existing_enriched=True,
         )
 
     return prospect

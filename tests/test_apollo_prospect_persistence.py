@@ -667,3 +667,136 @@ def test_apply_prospect_enrichment_updates_company_without_erasing_existing_valu
     assert updated.city == "Nairobi"
     assert updated.country == "Kenya"
     assert updated.industry == "real estate"
+
+
+def test_research_does_not_degrade_enriched_prospect_or_contact():
+    from app.services.apollo_persistence import (
+        persist_discovered_prospect,
+    )
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="5e562b21b0b5190001a53287",
+        name="Centum Real Estate",
+        normalized_name="centum real estate",
+        domain="centum.co.ke",
+        website_url="https://centum.co.ke",
+        linkedin_url=(
+            "https://www.linkedin.com/company/centum-re"
+        ),
+        employee_count=85,
+        city="Nairobi",
+        country="Kenya",
+        industry="real estate",
+        quality_score=92,
+        quality_band="high",
+        score_breakdown={"firmographics": 30},
+        score_reasons=["Enriched company data"],
+        review_status="enriched",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="68527052713b92000135dac5",
+        first_name="Kenneth",
+        last_name="Mbae",
+        name="Kenneth Mbae",
+        title="Managing Director",
+        seniority="c_suite",
+        linkedin_url=(
+            "http://www.linkedin.com/in/"
+            "kenneth-mbae-0b5b17a4"
+        ),
+        email="kenneth@example.com",
+        enrichment_status="enriched",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    # This represents a later lightweight Apollo search.
+    # Search results are intentionally much sparser than
+    # the enrichment data already stored above.
+    rediscovered = persist_discovered_prospect(
+        db,
+        {
+            "apollo_organization_id": (
+                "5e562b21b0b5190001a53287"
+            ),
+            "name": "Centum Real Estate",
+            "domain": None,
+            "website_url": None,
+            "linkedin_url": (
+                "https://www.linkedin.com/company/centum-re"
+            ),
+            "employee_count": None,
+            "city": None,
+            "country": None,
+            "industry": None,
+            "keywords": [],
+            "quality_score": 15,
+            "quality_band": "weak",
+            "score_breakdown": {
+                "discovery": 15,
+            },
+            "score_reasons": [
+                "Sparse discovery result",
+            ],
+            "decision_makers": [
+                {
+                    "apollo_person_id": (
+                        "68527052713b92000135dac5"
+                    ),
+                    "first_name": "Kenneth",
+                    "last_name": None,
+                    "name": "Kenneth Mb***e",
+                    "title": "Managing Director",
+                    "seniority": "c_suite",
+                    "linkedin_url": None,
+                }
+            ],
+        },
+    )
+
+    db.commit()
+    db.refresh(rediscovered)
+    db.refresh(contact)
+
+    assert rediscovered.id == prospect.id
+
+    # Rich company information must survive re-search.
+    assert rediscovered.domain == "centum.co.ke"
+    assert rediscovered.website_url == "https://centum.co.ke"
+    assert rediscovered.employee_count == 85
+    assert rediscovered.city == "Nairobi"
+    assert rediscovered.country == "Kenya"
+    assert rediscovered.industry == "real estate"
+
+    # Discovery scoring must not replace the final
+    # post-enrichment score.
+    assert rediscovered.quality_score == 92
+    assert rediscovered.quality_band == "high"
+    assert rediscovered.score_breakdown == {
+        "firmographics": 30
+    }
+    assert rediscovered.score_reasons == [
+        "Enriched company data"
+    ]
+
+    assert rediscovered.review_status == "enriched"
+
+    # Search-time obfuscation must never replace
+    # the enriched identity.
+    assert contact.first_name == "Kenneth"
+    assert contact.last_name == "Mbae"
+    assert contact.name == "Kenneth Mbae"
+    assert contact.linkedin_url == (
+        "http://www.linkedin.com/in/"
+        "kenneth-mbae-0b5b17a4"
+    )
+    assert contact.email == "kenneth@example.com"
+    assert contact.enrichment_status == "enriched"
