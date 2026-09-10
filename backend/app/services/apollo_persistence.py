@@ -339,11 +339,6 @@ def import_prospect_to_my_leads(
         .one()
     )
 
-    if prospect.review_status != "approved":
-        raise ValueError(
-            f"cannot import {prospect.review_status} prospect"
-        )
-
     if prospect.imported_lead_id is not None:
         existing_lead = (
             db.query(Lead)
@@ -353,6 +348,11 @@ def import_prospect_to_my_leads(
 
         if existing_lead is not None:
             return existing_lead
+
+    if prospect.review_status != "approved":
+        raise ValueError(
+            f"cannot import {prospect.review_status} prospect"
+        )
 
     contact = (
         db.query(ApolloProspectContact)
@@ -379,6 +379,8 @@ def import_prospect_to_my_leads(
     db.flush()
 
     prospect.imported_lead_id = lead.id
+    prospect.review_status = "imported"
+
     db.flush()
 
     return lead

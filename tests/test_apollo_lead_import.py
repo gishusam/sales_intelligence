@@ -223,3 +223,61 @@ def test_import_recovers_from_stale_imported_lead_id():
     assert lead.source == "apollo"
 
     assert db.query(Lead).count() == 1
+
+
+def test_successful_import_marks_prospect_imported_and_repeat_reuses_lead():
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-import-state",
+        name="Import State Property Managers",
+        normalized_name="import state property managers",
+        website_url="https://import-state.example.com",
+        city="Nairobi",
+        quality_score=89,
+        quality_band="high",
+        review_status="approved",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-import-state",
+        name="Jane Manager",
+        title="Managing Director",
+        email="jane@example.com",
+        enrichment_status="enriched",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    first = import_prospect_to_my_leads(
+        db,
+        prospect.id,
+        assigned_to="Sales Rep",
+    )
+
+    db.commit()
+    db.refresh(prospect)
+
+    assert prospect.review_status == "imported"
+    assert prospect.imported_lead_id == first.id
+    assert db.query(Lead).count() == 1
+
+    second = import_prospect_to_my_leads(
+        db,
+        prospect.id,
+        assigned_to="Sales Rep",
+    )
+
+    db.commit()
+
+    assert second.id == first.id
+    assert db.query(Lead).count() == 1
+
+    db.refresh(prospect)
+    assert prospect.review_status == "imported"
+    assert prospect.imported_lead_id == first.id
