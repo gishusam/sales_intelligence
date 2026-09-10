@@ -144,3 +144,37 @@ class ApolloClient:
 
         response.raise_for_status()
         return response.json()
+
+
+    def enrich_organization(
+        self,
+        *,
+        domain: str | None = None,
+        linkedin_url: str | None = None,
+        website: str | None = None,
+        name: str | None = None,
+    ) -> dict:
+        params = {}
+
+        if domain:
+            params["domain"] = domain
+
+        if linkedin_url:
+            params["linkedin_url"] = linkedin_url
+
+        if website:
+            params["website"] = website
+
+        if name:
+            params["name"] = name
+
+        response = self.http_client.get(
+            f"{APOLLO_BASE_URL}/organizations/enrich",
+            headers={
+                "x-api-key": self.api_key,
+            },
+            params=params,
+        )
+
+        response.raise_for_status()
+        return response.json()

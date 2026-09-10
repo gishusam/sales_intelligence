@@ -253,3 +253,69 @@ def test_enrich_person_sends_apollo_person_id():
 
     assert response["person"]["id"] == "person-123"
     assert response["person"]["email"] == "jane@example.com"
+
+
+def test_enrich_organization_sends_company_identifiers():
+    import httpx
+
+    from app.services.apollo import ApolloClient
+
+    captured = {}
+
+    def handler(request):
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["api_key"] = request.headers.get("x-api-key")
+        captured["domain"] = request.url.params.get("domain")
+        captured["linkedin_url"] = request.url.params.get(
+            "linkedin_url"
+        )
+        captured["website"] = request.url.params.get("website")
+        captured["name"] = request.url.params.get("name")
+
+        return httpx.Response(
+            200,
+            json={
+                "organization": {
+                    "id": "5e562b21b0b5190001a53287",
+                    "name": "Centum Real Estate",
+                    "primary_domain": "centum.co.ke",
+                    "estimated_num_employees": 50,
+                    "city": "Nairobi",
+                    "country": "Kenya",
+                    "industry": "real estate",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+
+    client = ApolloClient(
+        api_key="test-apollo-key",
+        http_client=http_client,
+    )
+
+    response = client.enrich_organization(
+        domain="centum.co.ke",
+        linkedin_url=(
+            "https://www.linkedin.com/company/centum-re"
+        ),
+        website="https://centum.co.ke",
+        name="Centum Real Estate",
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/api/v1/organizations/enrich"
+    assert captured["api_key"] == "test-apollo-key"
+
+    assert captured["domain"] == "centum.co.ke"
+    assert captured["linkedin_url"] == (
+        "https://www.linkedin.com/company/centum-re"
+    )
+    assert captured["website"] == "https://centum.co.ke"
+    assert captured["name"] == "Centum Real Estate"
+
+    assert response["organization"]["name"] == (
+        "Centum Real Estate"
+    )
