@@ -9,6 +9,7 @@ from app.auth import CurrentUser, get_current_user
 from app.database import get_db
 from app.models.apollo_prospect import ApolloProspect
 from app.services.apollo import ApolloClient
+from app.services.apollo_enrichment import enrich_prospect
 from app.schemas.apollo import ProspectSearchRequest
 from app.services.apollo_normalizer import normalize_organization, normalize_person
 from app.services.apollo_scoring import score_prospect
@@ -168,6 +169,68 @@ def search_prospects(
         "pagination": result.get("pagination", {}),
     }
 
+
+
+@router.post("/prospects/{prospect_id}/enrich")
+def enrich_selected_prospect(
+    prospect_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        existing = (
+            db.query(ApolloProspect)
+            .filter(ApolloProspect.id == prospect_id)
+            .one()
+        )
+    except NoResultFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Apollo prospect not found",
+        ) from exc
+
+    if existing.review_status != "discovered":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"cannot enrich "
+                f"{existing.review_status} prospect"
+            ),
+        )
+
+    client = ApolloClient(
+        api_key=settings.APOLLO_API_KEY,
+    )
+
+    try:
+        prospect = enrich_prospect(
+            db,
+            client,
+            prospect_id,
+        )
+    except httpx.HTTPError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=502,
+            detail="Apollo organization enrichment failed",
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    db.commit()
+
+    return {
+        "id": prospect.id,
+        "review_status": prospect.review_status,
+        "quality_score": prospect.quality_score,
+        "quality_band": prospect.quality_band,
+    }
 
 
 @router.get("/prospects/review-queue")
