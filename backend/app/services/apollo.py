@@ -178,3 +178,40 @@ class ApolloClient:
 
         response.raise_for_status()
         return response.json()
+
+
+    def enrich_contact_details(
+        self,
+        *,
+        person_id: str,
+        webhook_url: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        linkedin_url: str | None = None,
+    ) -> dict:
+        params = {
+            "id": person_id,
+            "run_waterfall_email": "true",
+            "run_waterfall_phone": "true",
+            "webhook_url": webhook_url,
+        }
+
+        if first_name:
+            params["first_name"] = first_name
+
+        if last_name:
+            params["last_name"] = last_name
+
+        if linkedin_url:
+            params["linkedin_url"] = linkedin_url
+
+        response = self.http_client.post(
+            f"{APOLLO_BASE_URL}/people/match",
+            headers={
+                "x-api-key": self.api_key,
+            },
+            params=params,
+        )
+
+        response.raise_for_status()
+        return response.json()

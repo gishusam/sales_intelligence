@@ -319,3 +319,81 @@ def test_enrich_organization_sends_company_identifiers():
     assert response["organization"]["name"] == (
         "Centum Real Estate"
     )
+
+
+def test_enrich_contact_details_requests_email_and_phone_waterfall():
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["api_key"] = request.headers.get("x-api-key")
+
+        for key in (
+            "id",
+            "first_name",
+            "last_name",
+            "linkedin_url",
+            "run_waterfall_email",
+            "run_waterfall_phone",
+            "webhook_url",
+        ):
+            captured[key] = request.url.params.get(key)
+
+        return httpx.Response(
+            200,
+            json={
+                "person": {
+                    "id": "68527052713b92000135dac5",
+                    "name": "Kenneth Mbae",
+                },
+                "waterfall": {
+                    "status": "accepted",
+                },
+                "request_id": "request-123",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport)
+
+    client = ApolloClient(
+        api_key="test-apollo-key",
+        http_client=http_client,
+    )
+
+    response = client.enrich_contact_details(
+        person_id="68527052713b92000135dac5",
+        first_name="Kenneth",
+        last_name="Mbae",
+        linkedin_url=(
+            "http://www.linkedin.com/in/"
+            "kenneth-mbae-0b5b17a4"
+        ),
+        webhook_url=(
+            "https://api.example.com/"
+            "api/apollo/webhooks/contact-enrichment"
+        ),
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/people/match"
+    assert captured["api_key"] == "test-apollo-key"
+
+    assert captured["id"] == "68527052713b92000135dac5"
+    assert captured["first_name"] == "Kenneth"
+    assert captured["last_name"] == "Mbae"
+    assert captured["linkedin_url"] == (
+        "http://www.linkedin.com/in/"
+        "kenneth-mbae-0b5b17a4"
+    )
+
+    assert captured["run_waterfall_email"] == "true"
+    assert captured["run_waterfall_phone"] == "true"
+    assert captured["webhook_url"] == (
+        "https://api.example.com/"
+        "api/apollo/webhooks/contact-enrichment"
+    )
+
+    assert response["waterfall"]["status"] == "accepted"
+    assert response["request_id"] == "request-123"
