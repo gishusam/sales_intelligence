@@ -6,6 +6,7 @@ from app.models.apollo_prospect import (
     ApolloProspect,
     ApolloProspectContact,
 )
+from app.models.lead import Lead
 from app.services.apollo_persistence import (
     apply_contact_enrichment,
     apply_prospect_enrichment,
@@ -280,6 +281,35 @@ def apply_contact_details_webhook(
             email=email,
             phone=phone,
         )
+
+        prospect = (
+            db.query(ApolloProspect)
+            .filter(
+                ApolloProspect.id
+                == contact.prospect_id
+            )
+            .one_or_none()
+        )
+
+        if (
+            prospect is not None
+            and prospect.imported_lead_id is not None
+        ):
+            lead = (
+                db.query(Lead)
+                .filter(
+                    Lead.id
+                    == prospect.imported_lead_id
+                )
+                .one_or_none()
+            )
+
+            if lead is not None:
+                if email is not None:
+                    lead.email = email
+
+                if phone is not None:
+                    lead.phone = phone
 
         updated_count += 1
 

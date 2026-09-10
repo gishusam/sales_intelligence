@@ -1,4 +1,5 @@
 import httpx
+from secrets import compare_digest
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,7 +10,10 @@ from app.auth import CurrentUser, get_current_user
 from app.database import get_db
 from app.models.apollo_prospect import ApolloProspect
 from app.services.apollo import ApolloClient
-from app.services.apollo_enrichment import enrich_prospect
+from app.services.apollo_enrichment import (
+    apply_contact_details_webhook,
+    enrich_prospect,
+)
 from app.schemas.apollo import ProspectSearchRequest
 from app.services.apollo_normalizer import normalize_organization, normalize_person
 from app.services.apollo_scoring import score_prospect
@@ -169,6 +173,40 @@ def search_prospects(
         "pagination": result.get("pagination", {}),
     }
 
+
+
+@router.post("/webhooks/contact-enrichment")
+def receive_contact_enrichment_webhook(
+    payload: dict,
+    token: str,
+    db: Session = Depends(get_db),
+):
+    expected_secret = (
+        settings.APOLLO_WEBHOOK_SECRET.strip()
+    )
+
+    if (
+        not expected_secret
+        or not compare_digest(
+            token,
+            expected_secret,
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid Apollo webhook token",
+        )
+
+    updated = apply_contact_details_webhook(
+        db,
+        payload,
+    )
+
+    db.commit()
+
+    return {
+        "updated": updated,
+    }
 
 
 @router.post("/prospects/{prospect_id}/enrich")
