@@ -242,6 +242,11 @@ def apply_contact_enrichment(
     db: Session,
     contact_id: int,
     *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    name: str | None = None,
+    title: str | None = None,
+    linkedin_url: str | None = None,
     email: str | None = None,
     phone: str | None = None,
 ) -> ApolloProspectContact:
@@ -251,11 +256,19 @@ def apply_contact_enrichment(
         .one()
     )
 
-    if email is not None:
-        contact.email = email
+    enriched_fields = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": name,
+        "title": title,
+        "linkedin_url": linkedin_url,
+        "email": email,
+        "phone": phone,
+    }
 
-    if phone is not None:
-        contact.phone = phone
+    for field, value in enriched_fields.items():
+        if value is not None:
+            setattr(contact, field, value)
 
     contact.enrichment_status = "enriched"
 

@@ -35,5 +35,10 @@ def enrich_prospect_contact(
     return apply_contact_enrichment(
         db,
         contact.id,
+        first_name=person.get("first_name"),
+        last_name=person.get("last_name"),
+        name=person.get("name"),
+        title=person.get("title"),
+        linkedin_url=person.get("linkedin_url"),
         email=person.get("email"),
     )

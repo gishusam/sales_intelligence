@@ -126,3 +126,76 @@ def test_enrich_prospect_contact_marks_failed_when_apollo_errors():
     assert updated.id == contact.id
     assert updated.email == "existing@example.com"
     assert updated.enrichment_status == "failed"
+
+
+def test_enrich_prospect_contact_persists_real_person_details():
+    from app.services.apollo_enrichment import enrich_prospect_contact
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="5e562b21b0b5190001a53287",
+        name="Centum Real Estate",
+        normalized_name="centum real estate",
+        review_status="discovered",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="68527052713b92000135dac5",
+        first_name="Kenneth",
+        last_name=None,
+        name="Kenneth Mb***e",
+        title="Managing Director",
+        linkedin_url=None,
+        email="existing@example.com",
+        enrichment_status="not_enriched",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    class RealisticApolloClient:
+        def enrich_person(self, person_id):
+            assert person_id == "68527052713b92000135dac5"
+
+            return {
+                "person": {
+                    "id": person_id,
+                    "first_name": "Kenneth",
+                    "last_name": "Mbae",
+                    "name": "Kenneth Mbae",
+                    "title": "Managing Director",
+                    "linkedin_url": (
+                        "http://www.linkedin.com/in/"
+                        "kenneth-mbae-0b5b17a4"
+                    ),
+                    "email": None,
+                    "email_status": "unavailable",
+                }
+            }
+
+    updated = enrich_prospect_contact(
+        db,
+        RealisticApolloClient(),
+        contact.id,
+    )
+
+    db.commit()
+
+    assert updated.first_name == "Kenneth"
+    assert updated.last_name == "Mbae"
+    assert updated.name == "Kenneth Mbae"
+    assert updated.title == "Managing Director"
+    assert updated.linkedin_url == (
+        "http://www.linkedin.com/in/"
+        "kenneth-mbae-0b5b17a4"
+    )
+
+    # Apollo returning None must not erase useful existing data.
+    assert updated.email == "existing@example.com"
+
+    assert updated.enrichment_status == "enriched"
