@@ -273,6 +273,8 @@ def apply_contact_details_webhook(
         phone = _webhook_phone(person)
 
         if email is None and phone is None:
+            contact.contact_enrichment_status = "not_found"
+            updated_count += 1
             continue
 
         apply_contact_enrichment(

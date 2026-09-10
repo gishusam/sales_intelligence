@@ -494,3 +494,54 @@ def test_contact_webhook_marks_contact_complete_with_email_and_phone():
     assert contact.email == "jane@example.com"
     assert contact.phone == "+254700000000"
     assert contact.contact_enrichment_status == "complete"
+
+
+def test_contact_webhook_marks_not_found_when_no_contact_details():
+    from app.services.apollo_enrichment import (
+        apply_contact_details_webhook,
+    )
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-no-contact-result",
+        name="No Contact Property Managers",
+        normalized_name="no contact property managers",
+        review_status="enriched",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-no-contact-result",
+        name="Jane Manager",
+        title="Managing Director",
+        enrichment_status="enriched",
+        contact_enrichment_status="pending",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    updated = apply_contact_details_webhook(
+        db,
+        {
+            "people": [
+                {
+                    "id": "person-no-contact-result",
+                    "emails": [],
+                    "phone_numbers": [],
+                }
+            ],
+        },
+    )
+
+    db.commit()
+    db.refresh(contact)
+
+    assert updated == 1
+    assert contact.email is None
+    assert contact.phone is None
+    assert contact.contact_enrichment_status == "not_found"
