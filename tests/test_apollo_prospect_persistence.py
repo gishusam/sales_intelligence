@@ -314,7 +314,7 @@ def test_persist_discovered_prospect_saves_company_and_contacts():
     }
 
 
-def test_move_prospect_to_review_queue_changes_discovered_to_pending_review():
+def test_move_prospect_to_review_queue_changes_enriched_to_pending_review():
     from app.services.apollo_persistence import (
         move_prospect_to_review_queue,
     )
@@ -325,7 +325,7 @@ def test_move_prospect_to_review_queue_changes_discovered_to_pending_review():
         apollo_organization_id="org-review-1",
         name="Acme Property Management",
         normalized_name="acme property management",
-        review_status="discovered",
+        review_status="enriched",
     )
 
     db.add(prospect)

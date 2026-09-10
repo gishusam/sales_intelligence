@@ -214,11 +214,7 @@ def move_prospect_to_review_queue(
         .one()
     )
 
-    if prospect.review_status in {
-        "approved",
-        "rejected",
-        "imported",
-    }:
+    if prospect.review_status != "enriched":
         raise ValueError(
             f"cannot move {prospect.review_status} "
             "prospect to review queue"

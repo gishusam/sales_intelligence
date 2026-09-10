@@ -23,7 +23,7 @@ def override_sales_user():
     )
 
 
-def test_move_prospect_to_review_queue_endpoint():
+def test_move_enriched_prospect_to_review_queue_endpoint():
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -46,7 +46,7 @@ def test_move_prospect_to_review_queue_endpoint():
         apollo_organization_id="org-review-http",
         name="Acme Property Management",
         normalized_name="acme property management",
-        review_status="discovered",
+        review_status="enriched",
     )
     db.add(prospect)
     db.commit()
@@ -595,3 +595,66 @@ def test_reject_endpoint_returns_not_found_for_missing_prospect():
     assert response.json() == {
         "detail": "Apollo prospect not found"
     }
+
+
+def test_review_endpoint_rejects_discovered_prospect_until_enriched():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Lead.__table__,
+            ApolloProspect.__table__,
+            ApolloProspectContact.__table__,
+        ],
+    )
+
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-not-enriched",
+        name="Not Yet Enriched Property Managers",
+        normalized_name="not yet enriched property managers",
+        review_status="discovered",
+    )
+
+    db.add(prospect)
+    db.commit()
+
+    prospect_id = prospect.id
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app = FastAPI()
+    app.include_router(apollo_router.router)
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[
+        get_current_user
+    ] = override_sales_user
+
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/apollo/prospects/{prospect_id}/review"
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": (
+            "cannot move discovered prospect "
+            "to review queue"
+        )
+    }
+
+    db.refresh(prospect)
+    assert prospect.review_status == "discovered"
