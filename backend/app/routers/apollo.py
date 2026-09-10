@@ -1,7 +1,7 @@
 import httpx
 from secrets import compare_digest
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import NoResultFound
 
@@ -13,6 +13,7 @@ from app.services.apollo import ApolloClient
 from app.services.apollo_enrichment import (
     apply_contact_details_webhook,
     enrich_prospect,
+    request_contact_enrichment,
 )
 from app.schemas.apollo import ProspectSearchRequest
 from app.services.apollo_normalizer import normalize_organization, normalize_person
@@ -206,6 +207,87 @@ def receive_contact_enrichment_webhook(
 
     return {
         "updated": updated,
+    }
+
+
+@router.post(
+    "/prospects/{prospect_id}/contact-enrichment"
+)
+def start_contact_enrichment(
+    prospect_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    webhook_secret = (
+        settings.APOLLO_WEBHOOK_SECRET.strip()
+    )
+
+    if not webhook_secret:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Apollo webhook secret is not configured"
+            ),
+        )
+
+    callback_url = request.url_for(
+        "receive_contact_enrichment_webhook"
+    )
+
+    webhook_url = str(
+        callback_url.include_query_params(
+            token=webhook_secret,
+        )
+    )
+
+    client = ApolloClient(
+        api_key=settings.APOLLO_API_KEY,
+    )
+
+    try:
+        contact = request_contact_enrichment(
+            db,
+            client,
+            prospect_id,
+            webhook_url=webhook_url,
+        )
+    except NoResultFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Apollo prospect not found",
+        ) from exc
+    except httpx.HTTPError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Apollo contact enrichment request failed"
+            ),
+        ) from exc
+    except ValueError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+
+    db.commit()
+
+    return {
+        "id": prospect_id,
+        "contact_id": contact.id,
+        "contact_name": contact.name,
+        "contact_enrichment_status": (
+            contact.contact_enrichment_status
+        ),
+        "request_id": (
+            contact.contact_enrichment_request_id
+        ),
+        "email": contact.email,
+        "phone": contact.phone,
     }
 
 

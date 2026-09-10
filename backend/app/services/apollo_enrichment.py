@@ -316,3 +316,79 @@ def apply_contact_details_webhook(
     db.flush()
 
     return updated_count
+
+
+def request_contact_enrichment(
+    db: Session,
+    client,
+    prospect_id: int,
+    *,
+    webhook_url: str,
+) -> ApolloProspectContact:
+    prospect = (
+        db.query(ApolloProspect)
+        .filter(ApolloProspect.id == prospect_id)
+        .one()
+    )
+
+    if prospect.review_status not in {
+        "enriched",
+        "pending_review",
+        "approved",
+        "imported",
+    }:
+        raise ValueError(
+            f"cannot enrich contact for "
+            f"{prospect.review_status} prospect"
+        )
+
+    contacts = (
+        db.query(ApolloProspectContact)
+        .filter(
+            ApolloProspectContact.prospect_id
+            == prospect.id,
+            ApolloProspectContact.enrichment_status
+            == "enriched",
+        )
+        .order_by(ApolloProspectContact.id)
+        .all()
+    )
+
+    contact = _select_best_contact(contacts)
+
+    if contact.email and contact.phone:
+        contact.contact_enrichment_status = "complete"
+        db.flush()
+        return contact
+
+    if contact.contact_enrichment_status == "pending":
+        return contact
+
+    result = client.enrich_contact_details(
+        person_id=contact.apollo_person_id,
+        first_name=contact.first_name,
+        last_name=contact.last_name,
+        linkedin_url=contact.linkedin_url,
+        webhook_url=webhook_url,
+    )
+
+    waterfall = result.get("waterfall") or {}
+
+    if waterfall.get("status") != "accepted":
+        raise ValueError(
+            waterfall.get("message")
+            or "Apollo contact enrichment was not accepted"
+        )
+
+    request_id = result.get("request_id")
+
+    contact.contact_enrichment_status = "pending"
+    contact.contact_enrichment_request_id = (
+        str(request_id)
+        if request_id is not None
+        else None
+    )
+
+    db.flush()
+
+    return contact

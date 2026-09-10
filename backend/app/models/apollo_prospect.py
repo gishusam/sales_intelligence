@@ -97,6 +97,13 @@ class ApolloProspectContact(Base):
         default="not_enriched",
     )
 
+    contact_enrichment_status = Column(
+        String,
+        nullable=False,
+        default="not_requested",
+    )
+    contact_enrichment_request_id = Column(String)
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
