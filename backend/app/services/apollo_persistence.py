@@ -104,6 +104,43 @@ def upsert_prospect(
     return prospect
 
 
+def apply_prospect_enrichment(
+    db: Session,
+    prospect_id: int,
+    *,
+    domain: str | None = None,
+    website_url: str | None = None,
+    linkedin_url: str | None = None,
+    employee_count: int | None = None,
+    city: str | None = None,
+    country: str | None = None,
+    industry: str | None = None,
+) -> ApolloProspect:
+    prospect = (
+        db.query(ApolloProspect)
+        .filter(ApolloProspect.id == prospect_id)
+        .one()
+    )
+
+    enriched_fields = {
+        "domain": domain,
+        "website_url": website_url,
+        "linkedin_url": linkedin_url,
+        "employee_count": employee_count,
+        "city": city,
+        "country": country,
+        "industry": industry,
+    }
+
+    for field, value in enriched_fields.items():
+        if value is not None:
+            setattr(prospect, field, value)
+
+    db.flush()
+
+    return prospect
+
+
 CONTACT_UPDATE_FIELDS = (
     "first_name",
     "last_name",

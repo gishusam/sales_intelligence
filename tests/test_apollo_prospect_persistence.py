@@ -611,3 +611,59 @@ def test_mark_contact_enrichment_failed_preserves_existing_contact_data():
     assert updated.enrichment_status == "failed"
     assert updated.email == "existing@example.com"
     assert updated.phone == "+254700000000"
+
+
+def test_apply_prospect_enrichment_updates_company_without_erasing_existing_values():
+    from app.services import apollo_persistence
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="5e562b21b0b5190001a53287",
+        name="Centum Real Estate",
+        normalized_name="centum real estate",
+        domain="existing-centum.co.ke",
+        website_url=None,
+        linkedin_url=(
+            "https://www.linkedin.com/company/centum-re"
+        ),
+        employee_count=None,
+        city=None,
+        country=None,
+        industry=None,
+        review_status="discovered",
+    )
+
+    db.add(prospect)
+    db.commit()
+
+    updated = apollo_persistence.apply_prospect_enrichment(
+        db,
+        prospect.id,
+        # Apollo omitted these: existing values must survive.
+        domain=None,
+        linkedin_url=None,
+
+        # Apollo enrichment returned these richer values.
+        website_url="https://centum.co.ke",
+        employee_count=85,
+        city="Nairobi",
+        country="Kenya",
+        industry="real estate",
+    )
+
+    db.commit()
+
+    assert updated.id == prospect.id
+
+    # None from Apollo must never destroy useful search data.
+    assert updated.domain == "existing-centum.co.ke"
+    assert updated.linkedin_url == (
+        "https://www.linkedin.com/company/centum-re"
+    )
+
+    assert updated.website_url == "https://centum.co.ke"
+    assert updated.employee_count == 85
+    assert updated.city == "Nairobi"
+    assert updated.country == "Kenya"
+    assert updated.industry == "real estate"
