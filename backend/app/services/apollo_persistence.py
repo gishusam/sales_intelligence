@@ -445,6 +445,8 @@ def import_prospect_to_my_leads(
         .filter(
             ApolloProspectContact.prospect_id == prospect.id,
             ApolloProspectContact.enrichment_status == "enriched",
+            ApolloProspectContact.email.isnot(None),
+            ApolloProspectContact.phone.isnot(None),
         )
         .order_by(ApolloProspectContact.id)
         .first()

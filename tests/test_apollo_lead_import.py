@@ -326,6 +326,7 @@ def test_import_uses_enriched_decision_maker_not_first_discovered_contact():
             "kenneth-mbae-0b5b17a4"
         ),
         email="kenneth@example.com",
+        phone="+254700000000",
         enrichment_status="enriched",
     )
 
@@ -346,5 +347,62 @@ def test_import_uses_enriched_decision_maker_not_first_discovered_contact():
     assert lead.contact_person == "Kenneth Mbae"
     assert lead.contact_person_role == "Managing Director"
     assert lead.email == "kenneth@example.com"
+    assert lead.phone == "+254700000000"
 
     assert lead.contact_person != "John Operations"
+
+
+def test_import_prefers_sales_ready_enriched_contact():
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-sales-ready-selection",
+        name="Westlands Property Managers",
+        normalized_name="westlands property managers",
+        review_status="approved",
+        quality_score=80,
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    # Enriched earlier, but NOT sales-ready.
+    incomplete = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-incomplete",
+        name="Wrong Contact",
+        title="Director",
+        email="wrong@example.com",
+        phone=None,
+        enrichment_status="enriched",
+    )
+
+    db.add(incomplete)
+    db.flush()
+
+    # This is the contact that should actually reach My Leads.
+    ready = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-ready",
+        name="Correct Contact",
+        title="Property Manager",
+        email="correct@example.com",
+        phone="+254700123456",
+        enrichment_status="enriched",
+    )
+
+    db.add(ready)
+    db.commit()
+
+    lead = import_prospect_to_my_leads(
+        db,
+        prospect.id,
+        assigned_to="Samuel Ngugi",
+    )
+
+    db.commit()
+
+    assert lead.contact_person == "Correct Contact"
+    assert lead.email == "correct@example.com"
+    assert lead.phone == "+254700123456"
+    assert lead.assigned_to == "Samuel Ngugi"
