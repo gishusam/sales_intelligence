@@ -215,3 +215,74 @@ def enrich_prospect(
     db.flush()
 
     return prospect
+
+
+def _webhook_email(person: dict) -> str | None:
+    emails = person.get("emails") or []
+
+    for item in emails:
+        email = item.get("email")
+
+        if email:
+            return email.strip()
+
+    return None
+
+
+def _webhook_phone(person: dict) -> str | None:
+    phone_numbers = person.get("phone_numbers") or []
+
+    for item in phone_numbers:
+        phone = (
+            item.get("sanitized_number")
+            or item.get("raw_number")
+        )
+
+        if phone:
+            return phone.strip()
+
+    return None
+
+
+def apply_contact_details_webhook(
+    db: Session,
+    payload: dict,
+) -> int:
+    updated_count = 0
+
+    for person in payload.get("people") or []:
+        person_id = person.get("id")
+
+        if not person_id:
+            continue
+
+        contact = (
+            db.query(ApolloProspectContact)
+            .filter(
+                ApolloProspectContact.apollo_person_id
+                == person_id
+            )
+            .one_or_none()
+        )
+
+        if contact is None:
+            continue
+
+        email = _webhook_email(person)
+        phone = _webhook_phone(person)
+
+        if email is None and phone is None:
+            continue
+
+        apply_contact_enrichment(
+            db,
+            contact.id,
+            email=email,
+            phone=phone,
+        )
+
+        updated_count += 1
+
+    db.flush()
+
+    return updated_count

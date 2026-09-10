@@ -355,3 +355,84 @@ def test_enrich_prospect_enriches_company_best_contact_and_rescores():
     assert updated.quality_band == "good"
 
     assert updated.review_status == "enriched"
+
+
+def test_contact_enrichment_webhook_persists_email_and_phone():
+    from app.services.apollo_enrichment import (
+        apply_contact_details_webhook,
+    )
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="5e562b21b0b5190001a53287",
+        name="Centum Real Estate",
+        normalized_name="centum real estate",
+        review_status="enriched",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    kenneth = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="68527052713b92000135dac5",
+        first_name="Kenneth",
+        last_name="Mbae",
+        name="Kenneth Mbae",
+        title="Managing Director",
+        email=None,
+        phone=None,
+        enrichment_status="enriched",
+    )
+
+    db.add(kenneth)
+    db.commit()
+
+    payload = {
+        "status": "success",
+        "target_fields": [
+            "emails",
+            "phone_numbers",
+        ],
+        "records_enriched": 1,
+        "email_records_enriched": 1,
+        "mobile_records_enriched": 1,
+        "request_id": "request-123",
+        "people": [
+            {
+                "id": "68527052713b92000135dac5",
+                "emails": [
+                    {
+                        "email": "kenneth@centum.co.ke",
+                        "email_status_cd": "Verified",
+                    }
+                ],
+                "phone_numbers": [
+                    {
+                        "raw_number": "0712 345 678",
+                        "sanitized_number": "+254712345678",
+                        "status_cd": "valid_number",
+                        "type_cd": "mobile",
+                    }
+                ],
+            }
+        ],
+    }
+
+    updated_count = apply_contact_details_webhook(
+        db,
+        payload,
+    )
+
+    db.commit()
+    db.refresh(kenneth)
+
+    assert updated_count == 1
+
+    assert kenneth.email == "kenneth@centum.co.ke"
+    assert kenneth.phone == "+254712345678"
+
+    assert kenneth.name == "Kenneth Mbae"
+    assert kenneth.title == "Managing Director"
+    assert kenneth.enrichment_status == "enriched"
