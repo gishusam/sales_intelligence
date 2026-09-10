@@ -74,3 +74,19 @@ def test_normalize_organization_preserves_operational_keywords():
         "tenant management",
         "rent collection",
     ]
+
+
+def test_normalize_person_builds_display_name_from_obfuscated_last_name():
+    raw = {
+        "id": "68527052713b92000135dac5",
+        "first_name": "Kenneth",
+        "last_name_obfuscated": "Mb***e",
+        "title": "Managing Director",
+        "organization": {
+            "name": "Centum Real Estate",
+        },
+    }
+
+    person = normalize_person(raw)
+
+    assert person["name"] == "Kenneth Mb***e"

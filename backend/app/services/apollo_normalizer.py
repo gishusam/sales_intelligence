@@ -18,12 +18,33 @@ def normalize_organization(raw: dict) -> dict:
 
 
 def normalize_person(raw: dict) -> dict:
+    first_name = raw.get("first_name")
+    last_name = raw.get("last_name")
+
+    name = raw.get("name")
+
+    if not name:
+        display_last_name = (
+            last_name
+            or raw.get("last_name_obfuscated")
+        )
+
+        if display_last_name:
+            name = " ".join(
+                part
+                for part in (
+                    first_name,
+                    display_last_name,
+                )
+                if part
+            )
+
     return {
         "apollo_person_id": raw.get("id"),
         "apollo_organization_id": raw.get("organization_id"),
-        "first_name": raw.get("first_name"),
-        "last_name": raw.get("last_name"),
-        "name": raw.get("name"),
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": name,
         "title": raw.get("title"),
         "seniority": raw.get("seniority"),
         "linkedin_url": raw.get("linkedin_url"),
