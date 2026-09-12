@@ -1,9 +1,9 @@
 # Milestone — Apollo Company Discovery → Credit-Aware Enrichment → Auto My Leads
 
-**Date:** 2026-09-12  
-**Repository:** `gishusam/sales_intelligence`  
-**Branch:** `feature/apollo-prospecting-backend`  
-**Baseline commit:** `d15e90f941f83c26f6a24de97c15a7008b3d29a4`  
+**Date:** 2026-09-12
+**Repository:** `gishusam/sales_intelligence`
+**Branch:** `feature/apollo-prospecting-backend`
+**Baseline commit:** `d15e90f941f83c26f6a24de97c15a7008b3d29a4`
 **Baseline commit message:** `feat: finish Apollo prospect discovery backend`
 
 ## Goal
