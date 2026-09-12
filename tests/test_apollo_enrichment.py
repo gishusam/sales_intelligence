@@ -545,3 +545,76 @@ def test_contact_webhook_marks_not_found_when_no_contact_details():
     assert contact.email is None
     assert contact.phone is None
     assert contact.contact_enrichment_status == "not_found"
+
+
+def test_request_contact_enrichment_accepts_native_phone_pending_response():
+    from app.services.apollo_enrichment import (
+        request_contact_enrichment,
+    )
+
+    db = make_session()
+
+    prospect = ApolloProspect(
+        apollo_organization_id="org-native-phone",
+        name="Native Phone Property Managers",
+        normalized_name="native phone property managers",
+        review_status="enriched",
+    )
+
+    db.add(prospect)
+    db.flush()
+
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-native-phone",
+        first_name="Jane",
+        last_name="Manager",
+        name="Jane Manager",
+        title="Property Manager",
+        seniority="manager",
+        email="jane@example.com",
+        phone=None,
+        enrichment_status="enriched",
+        contact_enrichment_status="not_requested",
+    )
+
+    db.add(contact)
+    db.commit()
+
+    class FakeClient:
+        def enrich_contact_details(
+            self,
+            *,
+            person_id,
+            webhook_url,
+            first_name=None,
+            last_name=None,
+            linkedin_url=None,
+        ):
+            assert person_id == "person-native-phone"
+            assert webhook_url == "https://example.com/apollo-webhook"
+
+            return {
+                "person": {
+                    "id": person_id,
+                },
+                "phone_enrichment": {
+                    "status": "pending",
+                    "request_id": "phone-native-123",
+                },
+                "request_id": -987654321,
+            }
+
+    updated = request_contact_enrichment(
+        db,
+        FakeClient(),
+        prospect.id,
+        webhook_url="https://example.com/apollo-webhook",
+    )
+
+    db.commit()
+    db.refresh(contact)
+
+    assert updated.id == contact.id
+    assert contact.contact_enrichment_status == "pending"
+    assert contact.contact_enrichment_request_id == "-987654321"

@@ -321,7 +321,7 @@ def test_enrich_organization_sends_company_identifiers():
     )
 
 
-def test_enrich_contact_details_requests_email_and_phone_waterfall():
+def test_enrich_contact_details_requests_native_phone_reveal():
     captured = {}
 
     def handler(request: httpx.Request):
@@ -334,6 +334,8 @@ def test_enrich_contact_details_requests_email_and_phone_waterfall():
             "first_name",
             "last_name",
             "linkedin_url",
+            "reveal_personal_emails",
+            "reveal_phone_number",
             "run_waterfall_email",
             "run_waterfall_phone",
             "webhook_url",
@@ -347,10 +349,11 @@ def test_enrich_contact_details_requests_email_and_phone_waterfall():
                     "id": "68527052713b92000135dac5",
                     "name": "Kenneth Mbae",
                 },
-                "waterfall": {
-                    "status": "accepted",
+                "phone_enrichment": {
+                    "status": "pending",
+                    "request_id": "phone-request-123",
                 },
-                "request_id": "request-123",
+                "request_id": -123456789,
             },
         )
 
@@ -383,17 +386,152 @@ def test_enrich_contact_details_requests_email_and_phone_waterfall():
     assert captured["id"] == "68527052713b92000135dac5"
     assert captured["first_name"] == "Kenneth"
     assert captured["last_name"] == "Mbae"
-    assert captured["linkedin_url"] == (
-        "http://www.linkedin.com/in/"
-        "kenneth-mbae-0b5b17a4"
-    )
 
-    assert captured["run_waterfall_email"] == "true"
-    assert captured["run_waterfall_phone"] == "true"
+    assert captured["reveal_personal_emails"] == "false"
+    assert captured["reveal_phone_number"] == "true"
+
+    assert captured["run_waterfall_email"] is None
+    assert captured["run_waterfall_phone"] is None
+
     assert captured["webhook_url"] == (
         "https://api.example.com/"
         "api/apollo/webhooks/contact-enrichment"
     )
 
-    assert response["waterfall"]["status"] == "accepted"
-    assert response["request_id"] == "request-123"
+    assert response["phone_enrichment"]["status"] == "pending"
+    assert response["request_id"] == -123456789
+
+
+def test_search_people_supports_discovery_filters():
+    import httpx
+
+    from app.services.apollo import ApolloClient
+
+    captured = {}
+
+    def handler(request):
+        captured["organization_ids"] = (
+            request.url.params.get_list("organization_ids[]")
+        )
+        captured["person_locations"] = (
+            request.url.params.get_list("person_locations[]")
+        )
+        captured["employee_ranges"] = (
+            request.url.params.get_list(
+                "organization_num_employees_ranges[]"
+            )
+        )
+        captured["titles"] = (
+            request.url.params.get_list("person_titles[]")
+        )
+        captured["seniorities"] = (
+            request.url.params.get_list(
+                "person_seniorities[]"
+            )
+        )
+
+        return httpx.Response(
+            200,
+            json={
+                "people": [],
+                "pagination": {},
+            },
+        )
+
+    client = ApolloClient(
+        api_key="test-apollo-key",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    client.search_people(
+        organization_ids=[],
+        titles=[
+            "Property Manager",
+            "Managing Director",
+        ],
+        seniorities=[
+            "manager",
+            "director",
+        ],
+        person_locations=[
+            "Westlands, Nairobi, Kenya",
+        ],
+        employee_ranges=["5,200"],
+        page=1,
+        per_page=25,
+    )
+
+    assert captured["organization_ids"] == []
+    assert captured["person_locations"] == [
+        "Westlands, Nairobi, Kenya",
+    ]
+    assert captured["employee_ranges"] == ["5,200"]
+    assert captured["titles"] == [
+        "Property Manager",
+        "Managing Director",
+    ]
+    assert captured["seniorities"] == [
+        "manager",
+        "director",
+    ]
+
+
+def test_search_organizations_can_filter_by_organization_ids():
+    import httpx
+
+    from app.services.apollo import ApolloClient
+
+    captured = {}
+
+    def handler(request):
+        captured["organization_ids"] = (
+            request.url.params.get_list("organization_ids[]")
+        )
+        captured["locations"] = (
+            request.url.params.get_list(
+                "organization_locations[]"
+            )
+        )
+        captured["keywords"] = (
+            request.url.params.get_list(
+                "q_organization_keyword_tags[]"
+            )
+        )
+
+        return httpx.Response(
+            200,
+            json={
+                "organizations": [],
+                "pagination": {},
+            },
+        )
+
+    client = ApolloClient(
+        api_key="test-apollo-key",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    client.search_organizations(
+        locations=[],
+        employee_ranges=["5,200"],
+        keywords=["property management"],
+        organization_ids=[
+            "org-1",
+            "org-2",
+        ],
+        page=1,
+        per_page=25,
+    )
+
+    assert captured["organization_ids"] == [
+        "org-1",
+        "org-2",
+    ]
+    assert captured["locations"] == []
+    assert captured["keywords"] == [
+        "property management",
+    ]

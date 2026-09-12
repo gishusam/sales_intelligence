@@ -59,7 +59,7 @@ def make_app_and_db():
     return app, db
 
 
-def test_contact_enrichment_starts_waterfall_and_marks_pending(
+def test_contact_enrichment_starts_phone_reveal_and_marks_pending(
     monkeypatch,
 ):
     app, db = make_app_and_db()
@@ -134,8 +134,9 @@ def test_contact_enrichment_starts_waterfall_and_marks_pending(
                     "id": person_id,
                     "name": "Kenneth Mbae",
                 },
-                "waterfall": {
-                    "status": "accepted",
+                "phone_enrichment": {
+                    "status": "pending",
+                    "request_id": "phone-request-123",
                 },
                 "request_id": "1039995589705121975",
             }

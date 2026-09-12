@@ -8,7 +8,10 @@ from sqlalchemy.orm.exc import NoResultFound
 from app.config import settings
 from app.auth import CurrentUser, get_current_user
 from app.database import get_db
-from app.models.apollo_prospect import ApolloProspect
+from app.models.apollo_prospect import (
+    ApolloProspect,
+    ApolloProspectContact,
+)
 from app.services.apollo import ApolloClient
 from app.services.apollo_enrichment import (
     apply_contact_details_webhook,
@@ -69,95 +72,173 @@ def search_prospects(
         api_key=settings.APOLLO_API_KEY,
     )
 
-    result = client.search_organizations(
-        locations=request.locations,
-        employee_ranges=[
-            f"{request.employee_min},{request.employee_max}"
-        ],
-        keywords=request.business_types,
-        page=request.page,
-        per_page=request.per_page,
+    employee_ranges = [
+        f"{request.employee_min},{request.employee_max}"
+    ]
+
+    use_people_first = bool(
+        request.decision_maker_titles
+        or request.decision_maker_seniorities
     )
 
-    organizations = result.get("organizations", [])
+    raw_people = []
+    people_result = None
+
+    if use_people_first:
+        people_result = client.search_people(
+            organization_ids=[],
+            titles=request.decision_maker_titles,
+            seniorities=(
+                request.decision_maker_seniorities
+            ),
+            person_locations=request.locations,
+            employee_ranges=employee_ranges,
+            page=request.page,
+            per_page=request.per_page,
+        )
+
+        raw_people = people_result.get(
+            "people",
+            [],
+        )
+
+        organization_ids = []
+        seen_organization_ids = set()
+
+        for raw_person in raw_people:
+            organization_id = raw_person.get(
+                "organization_id"
+            )
+
+            if not organization_id:
+                organization_id = (
+                    raw_person.get("organization") or {}
+                ).get("id")
+
+            if (
+                organization_id
+                and organization_id
+                not in seen_organization_ids
+            ):
+                seen_organization_ids.add(
+                    organization_id
+                )
+                organization_ids.append(
+                    organization_id
+                )
+
+        if not organization_ids:
+            return {
+                "prospects": [],
+                "pagination": people_result.get(
+                    "pagination",
+                    {},
+                ),
+            }
+
+        result = client.search_organizations(
+            locations=[],
+            employee_ranges=employee_ranges,
+            keywords=request.business_types,
+            organization_ids=organization_ids,
+            page=1,
+            per_page=request.per_page,
+        )
+    else:
+        result = client.search_organizations(
+            locations=request.locations,
+            employee_ranges=employee_ranges,
+            keywords=request.business_types,
+            page=request.page,
+            per_page=request.per_page,
+        )
+
+    organizations = result.get(
+        "organizations",
+        [],
+    )
 
     prospects = [
         normalize_organization(organization)
         for organization in organizations
     ]
 
-    if (
-        request.decision_maker_titles
-        or request.decision_maker_seniorities
-    ):
-        organization_ids = [
+    if use_people_first:
+        people_by_organization = {}
+
+        organization_ids_by_name = {
+            organization["name"].strip().casefold():
+            organization["id"]
+            for organization in organizations
+            if organization.get("name")
+            and organization.get("id")
+        }
+
+        valid_organization_ids = {
             organization.get("id")
             for organization in organizations
             if organization.get("id")
-        ]
+        }
 
-        if organization_ids:
-            people_result = client.search_people(
-                organization_ids=organization_ids,
-                titles=request.decision_maker_titles,
-                seniorities=request.decision_maker_seniorities,
-                page=1,
-                per_page=request.per_page,
+        for raw_person in raw_people:
+            person = normalize_person(
+                raw_person
             )
 
-            people_by_organization = {}
+            organization_id = person[
+                "apollo_organization_id"
+            ]
 
-            organization_ids_by_name = {
-                organization["name"].strip().casefold():
-                organization["id"]
-                for organization in organizations
-                if organization.get("name")
-                and organization.get("id")
-            }
+            if not organization_id:
+                organization_id = (
+                    raw_person.get("organization") or {}
+                ).get("id")
 
-            for raw_person in people_result.get("people", []):
-                person = normalize_person(raw_person)
-                organization_id = person["apollo_organization_id"]
+            if not organization_id:
+                organization_name = (
+                    raw_person.get("organization") or {}
+                ).get("name")
 
-                if not organization_id:
-                    organization_name = (
-                        raw_person.get("organization") or {}
-                    ).get("name")
-
-                    if organization_name:
-                        organization_id = (
-                            organization_ids_by_name.get(
-                                organization_name
-                                .strip()
-                                .casefold()
-                            )
+                if organization_name:
+                    organization_id = (
+                        organization_ids_by_name.get(
+                            organization_name
+                            .strip()
+                            .casefold()
                         )
-
-                        if organization_id:
-                            person["apollo_organization_id"] = (
-                                organization_id
-                            )
-
-                if not organization_id:
-                    continue
-
-                people_by_organization.setdefault(
-                    organization_id,
-                    [],
-                ).append(person)
-
-            for prospect in prospects:
-                prospect["decision_makers"] = (
-                    people_by_organization.get(
-                        prospect["apollo_organization_id"],
-                        [],
                     )
+
+            if (
+                not organization_id
+                or organization_id
+                not in valid_organization_ids
+            ):
+                continue
+
+            person["apollo_organization_id"] = (
+                organization_id
+            )
+
+            people_by_organization.setdefault(
+                organization_id,
+                [],
+            ).append(person)
+
+        for prospect in prospects:
+            prospect["decision_makers"] = (
+                people_by_organization.get(
+                    prospect[
+                        "apollo_organization_id"
+                    ],
+                    [],
                 )
+            )
 
     for prospect in prospects:
         prospect.update(
             score_prospect(prospect)
         )
+
         persisted = persist_discovered_prospect(
             db,
             prospect,
@@ -165,15 +246,27 @@ def search_prospects(
 
         if persisted is not None:
             prospect["id"] = persisted.id
-            prospect["review_status"] = persisted.review_status
+            prospect["review_status"] = (
+                persisted.review_status
+            )
 
     db.commit()
 
+    pagination = result.get(
+        "pagination",
+        {},
+    )
+
+    if people_result is not None:
+        pagination = people_result.get(
+            "pagination",
+            {},
+        )
+
     return {
         "prospects": prospects,
-        "pagination": result.get("pagination", {}),
+        "pagination": pagination,
     }
-
 
 
 @router.post("/webhooks/contact-enrichment")
@@ -353,6 +446,96 @@ def enrich_selected_prospect(
     }
 
 
+def _serialize_prospect_summary(
+    db: Session,
+    prospect: ApolloProspect,
+) -> dict:
+    contact_ready = (
+        db.query(ApolloProspectContact)
+        .filter(
+            ApolloProspectContact.prospect_id == prospect.id,
+            ApolloProspectContact.email.isnot(None),
+            ApolloProspectContact.phone.isnot(None),
+        )
+        .first()
+        is not None
+    )
+
+    return {
+        "id": prospect.id,
+        "apollo_organization_id": (
+            prospect.apollo_organization_id
+        ),
+        "name": prospect.name,
+        "domain": prospect.domain,
+        "website_url": prospect.website_url,
+        "linkedin_url": prospect.linkedin_url,
+        "employee_count": prospect.employee_count,
+        "city": prospect.city,
+        "country": prospect.country,
+        "industry": prospect.industry,
+        "quality_score": prospect.quality_score,
+        "quality_band": prospect.quality_band,
+        "review_status": prospect.review_status,
+        "imported_lead_id": prospect.imported_lead_id,
+        "contact_ready": contact_ready,
+    }
+
+
+def _serialize_contact(
+    contact: ApolloProspectContact,
+) -> dict:
+    return {
+        "id": contact.id,
+        "apollo_person_id": contact.apollo_person_id,
+        "first_name": contact.first_name,
+        "last_name": contact.last_name,
+        "name": contact.name,
+        "title": contact.title,
+        "seniority": contact.seniority,
+        "linkedin_url": contact.linkedin_url,
+        "email": contact.email,
+        "phone": contact.phone,
+        "enrichment_status": contact.enrichment_status,
+        "contact_enrichment_status": (
+            contact.contact_enrichment_status
+        ),
+        "contact_enrichment_request_id": (
+            contact.contact_enrichment_request_id
+        ),
+    }
+
+
+@router.get("/prospects")
+def get_persisted_prospects(
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    query = db.query(ApolloProspect)
+
+    if status:
+        query = query.filter(
+            ApolloProspect.review_status == status
+        )
+
+    prospects = (
+        query
+        .order_by(ApolloProspect.id.desc())
+        .all()
+    )
+
+    return {
+        "prospects": [
+            _serialize_prospect_summary(
+                db,
+                prospect,
+            )
+            for prospect in prospects
+        ]
+    }
+
+
 @router.get("/prospects/review-queue")
 def get_review_queue(
     db: Session = Depends(get_db),
@@ -379,6 +562,49 @@ def get_review_queue(
             for prospect in prospects
         ]
     }
+
+
+@router.get("/prospects/{prospect_id}")
+def get_persisted_prospect(
+    prospect_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    prospect = (
+        db.query(ApolloProspect)
+        .filter(
+            ApolloProspect.id == prospect_id
+        )
+        .one_or_none()
+    )
+
+    if prospect is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Apollo prospect not found",
+        )
+
+    contacts = (
+        db.query(ApolloProspectContact)
+        .filter(
+            ApolloProspectContact.prospect_id
+            == prospect.id
+        )
+        .order_by(ApolloProspectContact.id)
+        .all()
+    )
+
+    result = _serialize_prospect_summary(
+        db,
+        prospect,
+    )
+
+    result["contacts"] = [
+        _serialize_contact(contact)
+        for contact in contacts
+    ]
+
+    return result
 
 
 @router.post("/prospects/{prospect_id}/review")

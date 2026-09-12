@@ -45,6 +45,7 @@ class ApolloClient:
         keywords: list[str],
         page: int = 1,
         per_page: int = 25,
+        organization_ids: list[str] | None = None,
     ) -> dict:
         params = []
 
@@ -64,6 +65,11 @@ class ApolloClient:
         for keyword in keywords:
             params.append(
                 ("q_organization_keyword_tags[]", keyword)
+            )
+
+        for organization_id in organization_ids or []:
+            params.append(
+                ("organization_ids[]", organization_id)
             )
 
         params.extend(
@@ -91,6 +97,8 @@ class ApolloClient:
         seniorities: list[str],
         page: int = 1,
         per_page: int = 25,
+        person_locations: list[str] | None = None,
+        employee_ranges: list[str] | None = None,
     ) -> dict:
         params = []
 
@@ -105,6 +113,19 @@ class ApolloClient:
         for organization_id in organization_ids:
             params.append(
                 ("organization_ids[]", organization_id)
+            )
+
+        for location in person_locations or []:
+            params.append(
+                ("person_locations[]", location)
+            )
+
+        for employee_range in employee_ranges or []:
+            params.append(
+                (
+                    "organization_num_employees_ranges[]",
+                    employee_range,
+                )
             )
 
         params.extend(
@@ -191,8 +212,8 @@ class ApolloClient:
     ) -> dict:
         params = {
             "id": person_id,
-            "run_waterfall_email": "true",
-            "run_waterfall_phone": "true",
+            "reveal_personal_emails": "false",
+            "reveal_phone_number": "true",
             "webhook_url": webhook_url,
         }
 

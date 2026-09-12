@@ -381,12 +381,14 @@ def request_contact_enrichment(
         webhook_url=webhook_url,
     )
 
-    waterfall = result.get("waterfall") or {}
+    phone_enrichment = (
+        result.get("phone_enrichment") or {}
+    )
 
-    if waterfall.get("status") != "accepted":
+    if phone_enrichment.get("status") != "pending":
         raise ValueError(
-            waterfall.get("message")
-            or "Apollo contact enrichment was not accepted"
+            phone_enrichment.get("message")
+            or "Apollo phone enrichment was not accepted"
         )
 
     request_id = result.get("request_id")
