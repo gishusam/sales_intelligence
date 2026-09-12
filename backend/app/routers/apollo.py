@@ -12,6 +12,7 @@ from app.models.apollo_prospect import (
     ApolloProspect,
     ApolloProspectContact,
 )
+from app.models.apollo_search_run import ApolloSearchRun
 from app.services.apollo import ApolloClient
 from app.services.apollo_enrichment import (
     apply_contact_details_webhook,
@@ -21,8 +22,14 @@ from app.services.apollo_enrichment import (
 from app.schemas.apollo import ProspectSearchRequest
 from app.services.apollo_normalizer import normalize_organization, normalize_person
 from app.services.apollo_scoring import score_prospect
+from app.services.apollo_queue import (
+    ApolloEnrichmentAlreadyRunning,
+    enrich_search_run,
+)
 from app.services.apollo_persistence import (
+    attach_prospect_to_search_run,
     approve_prospect,
+    create_search_run,
     import_prospect_to_my_leads,
     move_prospect_to_review_queue,
     persist_discovered_prospect,
@@ -163,6 +170,14 @@ def search_prospects(
         for organization in organizations
     ]
 
+    search_run = None
+    if hasattr(db, "add"):
+        search_run = create_search_run(
+            db,
+            filters=request.model_dump(),
+            assigned_to=getattr(user, "name", "Apollo") or "Apollo",
+        )
+
     if use_people_first:
         people_by_organization = {}
 
@@ -249,6 +264,12 @@ def search_prospects(
             prospect["review_status"] = (
                 persisted.review_status
             )
+            if search_run is not None:
+                attach_prospect_to_search_run(
+                    db,
+                    search_run,
+                    persisted,
+                )
 
     db.commit()
 
@@ -263,10 +284,85 @@ def search_prospects(
             {},
         )
 
-    return {
+    response = {
         "prospects": prospects,
         "pagination": pagination,
     }
+    if search_run is not None:
+        response["search_run"] = _serialize_search_run(search_run)
+    return response
+
+
+def _serialize_search_run(run: ApolloSearchRun) -> dict:
+    return {
+        "id": run.id,
+        "status": run.status,
+        "found_count": run.found_count or 0,
+        "processed_count": run.processed_count or 0,
+        "imported_count": run.imported_count or 0,
+        "no_contact_count": run.no_contact_count or 0,
+        "failed_count": run.failed_count or 0,
+        "queued_count": run.queued_count or 0,
+        "credit_status": run.credit_status,
+        "billing_cycle_reset_at": run.billing_cycle_reset_at,
+    }
+
+
+@router.get("/search-runs/{run_id}")
+def get_search_run(
+    run_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    run = (
+        db.query(ApolloSearchRun)
+        .filter(ApolloSearchRun.id == run_id)
+        .one_or_none()
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Apollo search run not found")
+
+    result = _serialize_search_run(run)
+    result["filters"] = run.filters
+    return result
+
+
+@router.post("/search-runs/{run_id}/enrich")
+def enrich_contacts_for_search_run(
+    run_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    webhook_secret = settings.APOLLO_WEBHOOK_SECRET.strip()
+    if not webhook_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Apollo webhook secret is not configured",
+        )
+
+    webhook_url = str(
+        request.url_for(
+            "receive_contact_enrichment_webhook"
+        ).include_query_params(token=webhook_secret)
+    )
+    try:
+        result = enrich_search_run(
+            db,
+            ApolloClient(api_key=settings.APOLLO_API_KEY),
+            run_id,
+            webhook_url=webhook_url,
+        )
+    except NoResultFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Apollo search run not found",
+        ) from exc
+    except ApolloEnrichmentAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.commit()
+    return _serialize_search_run(result.run)
 
 
 @router.post("/webhooks/contact-enrichment")

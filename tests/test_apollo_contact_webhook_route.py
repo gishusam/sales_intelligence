@@ -11,6 +11,7 @@ from app.models.apollo_prospect import (
     ApolloProspectContact,
 )
 from app.models.lead import Lead
+from app.models.apollo_search_run import ApolloSearchRun, ApolloSearchRunProspect
 from app.routers import apollo as apollo_router
 
 
@@ -27,6 +28,8 @@ def make_app_and_db():
             Lead.__table__,
             ApolloProspect.__table__,
             ApolloProspectContact.__table__,
+            ApolloSearchRun.__table__,
+            ApolloSearchRunProspect.__table__,
         ],
     )
 
@@ -172,3 +175,119 @@ def test_contact_webhook_rejects_wrong_secret(
     )
 
     assert response.status_code == 403
+
+
+def test_contact_ready_webhook_auto_imports_once_and_completes_run(monkeypatch):
+    app, db = make_app_and_db()
+    monkeypatch.setattr(
+        settings,
+        "APOLLO_WEBHOOK_SECRET",
+        "test-webhook-secret",
+        raising=False,
+    )
+    run = ApolloSearchRun(
+        filters={"locations": ["Nairobi"]},
+        assigned_to="Jane Sales",
+        status="awaiting_webhooks",
+        found_count=1,
+        processed_count=1,
+        queued_count=0,
+    )
+    prospect = ApolloProspect(
+        name="Webhook Developer",
+        city="Nairobi",
+        review_status="discovered",
+    )
+    db.add_all([run, prospect])
+    db.flush()
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-webhook-auto",
+        name="Wendy Founder",
+        title="Founder",
+        enrichment_status="not_enriched",
+        contact_enrichment_status="pending",
+    )
+    db.add(contact)
+    db.flush()
+    item = ApolloSearchRunProspect(
+        search_run_id=run.id,
+        prospect_id=prospect.id,
+        contact_id=contact.id,
+        status="pending",
+        attempts=1,
+    )
+    db.add(item)
+    db.commit()
+
+    payload = {
+        "people": [
+            {
+                "id": "person-webhook-auto",
+                "emails": [{"email": "wendy@example.com"}],
+                "phone_numbers": [{"sanitized_number": "+254711111111"}],
+            }
+        ]
+    }
+    client = TestClient(app)
+    first = client.post(
+        "/api/apollo/webhooks/contact-enrichment?token=test-webhook-secret",
+        json=payload,
+    )
+    second = client.post(
+        "/api/apollo/webhooks/contact-enrichment?token=test-webhook-secret",
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert db.query(Lead).count() == 1
+    lead = db.query(Lead).one()
+    assert lead.assigned_to == "Jane Sales"
+    assert lead.source == "apollo"
+    assert lead.status == "new"
+    assert item.status == "imported"
+    assert run.imported_count == 1
+    assert run.status == "complete"
+
+
+def test_empty_contact_webhook_marks_pending_item_no_contact(monkeypatch):
+    app, db = make_app_and_db()
+    monkeypatch.setattr(settings, "APOLLO_WEBHOOK_SECRET", "secret", raising=False)
+    run = ApolloSearchRun(
+        filters={},
+        assigned_to="Jane Sales",
+        status="awaiting_webhooks",
+        found_count=1,
+        processed_count=1,
+        queued_count=0,
+    )
+    prospect = ApolloProspect(name="No Contact Ltd", review_status="discovered")
+    db.add_all([run, prospect])
+    db.flush()
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-empty",
+        enrichment_status="not_enriched",
+        contact_enrichment_status="pending",
+    )
+    db.add(contact)
+    db.flush()
+    item = ApolloSearchRunProspect(
+        search_run_id=run.id,
+        prospect_id=prospect.id,
+        contact_id=contact.id,
+        status="pending",
+    )
+    db.add(item)
+    db.commit()
+
+    response = TestClient(app).post(
+        "/api/apollo/webhooks/contact-enrichment?token=secret",
+        json={"people": [{"id": "person-empty", "emails": [], "phone_numbers": []}]},
+    )
+
+    assert response.status_code == 200
+    assert item.status == "no_contact"
+    assert run.no_contact_count == 1
+    assert run.status == "complete"

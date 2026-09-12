@@ -41,6 +41,43 @@ def test_apollo_health_sends_api_key_header():
     assert captured["api_key"] == "test-apollo-key"
 
 
+def test_credit_usage_sends_api_key_header_without_spending_credits():
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["api_key"] = request.headers.get("x-api-key")
+        return httpx.Response(
+            200,
+            json={
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 100,
+                        "consumed": 10,
+                        "left_over": 90,
+                    }
+                }
+            },
+        )
+
+    client = ApolloClient(
+        api_key="test-apollo-key",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    response = client.get_credit_usage()
+
+    assert captured == {
+        "method": "POST",
+        "path": "/api/v1/usage_stats/credit_usage_stats",
+        "api_key": "test-apollo-key",
+    }
+    assert response["credit_usage_stats"]["lead_credit"]["left_over"] == 90
+
+
 def test_search_organizations_sends_filters_and_authentication():
     captured = {}
 

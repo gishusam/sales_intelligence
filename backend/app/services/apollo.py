@@ -37,6 +37,17 @@ class ApolloClient:
         response.raise_for_status()
         return response.json()
 
+    def get_credit_usage(self) -> dict:
+        response = self.http_client.post(
+            f"{APOLLO_BASE_URL}/usage_stats/credit_usage_stats",
+            headers={
+                "x-api-key": self.api_key,
+            },
+        )
+
+        response.raise_for_status()
+        return response.json()
+
 
     def search_organizations(
         self,

@@ -1,5 +1,7 @@
 import httpx
+from datetime import datetime, timezone
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from app.models.apollo_prospect import (
@@ -7,9 +9,11 @@ from app.models.apollo_prospect import (
     ApolloProspectContact,
 )
 from app.models.lead import Lead
+from app.models.apollo_search_run import ApolloSearchRun, ApolloSearchRunProspect
 from app.services.apollo_persistence import (
     apply_contact_enrichment,
     apply_prospect_enrichment,
+    auto_import_contact_ready_prospect,
     mark_contact_enrichment_failed,
 )
 from app.services.apollo_scoring import score_prospect
@@ -250,6 +254,9 @@ def apply_contact_details_webhook(
     payload: dict,
 ) -> int:
     updated_count = 0
+    has_queue_table = inspect(db.get_bind()).has_table(
+        "apollo_search_run_prospects"
+    )
 
     for person in payload.get("people") or []:
         person_id = person.get("id")
@@ -274,6 +281,35 @@ def apply_contact_details_webhook(
 
         if email is None and phone is None:
             contact.contact_enrichment_status = "not_found"
+            if has_queue_table:
+                queue_item = (
+                    db.query(ApolloSearchRunProspect)
+                    .filter(ApolloSearchRunProspect.contact_id == contact.id)
+                    .one_or_none()
+                )
+                if queue_item is not None:
+                    run = (
+                        db.query(ApolloSearchRun)
+                        .filter(ApolloSearchRun.id == queue_item.search_run_id)
+                        .one()
+                    )
+                    if queue_item.status == "pending":
+                        queue_item.status = "no_contact"
+                        run.no_contact_count = (run.no_contact_count or 0) + 1
+                    db.flush()
+                    remaining = (
+                        db.query(ApolloSearchRunProspect)
+                        .filter(
+                            ApolloSearchRunProspect.search_run_id == run.id,
+                            ApolloSearchRunProspect.status.in_(
+                                ["queued", "pending"]
+                            ),
+                        )
+                        .count()
+                    )
+                    if remaining == 0:
+                        run.status = "complete"
+                        run.enrichment_completed_at = datetime.now(timezone.utc)
             updated_count += 1
             continue
 
@@ -319,6 +355,50 @@ def apply_contact_details_webhook(
 
                 if phone is not None:
                     lead.phone = phone
+
+        if (
+            prospect is not None
+            and contact.email
+            and contact.phone
+            and has_queue_table
+        ):
+            queue_item = (
+                db.query(ApolloSearchRunProspect)
+                .filter(
+                    ApolloSearchRunProspect.contact_id == contact.id,
+                )
+                .one_or_none()
+            )
+            if queue_item is not None:
+                run = (
+                    db.query(ApolloSearchRun)
+                    .filter(
+                        ApolloSearchRun.id == queue_item.search_run_id
+                    )
+                    .one()
+                )
+                auto_import_contact_ready_prospect(
+                    db,
+                    prospect.id,
+                    assigned_to=run.assigned_to or "Apollo",
+                )
+                if queue_item.status != "imported":
+                    queue_item.status = "imported"
+                    run.imported_count = (run.imported_count or 0) + 1
+
+                remaining = (
+                    db.query(ApolloSearchRunProspect)
+                    .filter(
+                        ApolloSearchRunProspect.search_run_id == run.id,
+                        ApolloSearchRunProspect.status.in_(
+                            ["queued", "pending"]
+                        ),
+                    )
+                    .count()
+                )
+                if remaining == 0:
+                    run.status = "complete"
+                    run.enrichment_completed_at = datetime.now(timezone.utc)
 
         updated_count += 1
 

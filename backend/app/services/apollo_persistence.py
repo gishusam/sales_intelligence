@@ -5,6 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.models.lead import Lead
 from app.models.apollo_prospect import ApolloProspect, ApolloProspectContact
+from app.models.apollo_search_run import (
+    ApolloSearchRun,
+    ApolloSearchRunProspect,
+)
 
 
 PROSPECT_UPDATE_FIELDS = (
@@ -22,6 +26,52 @@ PROSPECT_UPDATE_FIELDS = (
     "score_breakdown",
     "score_reasons",
 )
+
+
+def create_search_run(
+    db: Session,
+    *,
+    filters: dict,
+    assigned_to: str,
+) -> ApolloSearchRun:
+    run = ApolloSearchRun(
+        filters=filters,
+        assigned_to=assigned_to,
+        status="queued",
+        found_count=0,
+        queued_count=0,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def attach_prospect_to_search_run(
+    db: Session,
+    run: ApolloSearchRun,
+    prospect: ApolloProspect,
+) -> ApolloSearchRunProspect:
+    existing = (
+        db.query(ApolloSearchRunProspect)
+        .filter(
+            ApolloSearchRunProspect.search_run_id == run.id,
+            ApolloSearchRunProspect.prospect_id == prospect.id,
+        )
+        .one_or_none()
+    )
+    if existing is not None:
+        return existing
+
+    item = ApolloSearchRunProspect(
+        search_run_id=run.id,
+        prospect_id=prospect.id,
+        status="queued",
+    )
+    db.add(item)
+    run.found_count = (run.found_count or 0) + 1
+    run.queued_count = (run.queued_count or 0) + 1
+    db.flush()
+    return item
 
 
 def normalize_company_name(name: str | None) -> str | None:
@@ -476,3 +526,47 @@ def import_prospect_to_my_leads(
     db.flush()
 
     return lead
+
+
+def auto_import_contact_ready_prospect(
+    db: Session,
+    prospect_id: int,
+    *,
+    assigned_to: str,
+) -> Lead:
+    prospect = (
+        db.query(ApolloProspect)
+        .filter(ApolloProspect.id == prospect_id)
+        .one()
+    )
+    if prospect.imported_lead_id is not None:
+        existing = (
+            db.query(Lead)
+            .filter(Lead.id == prospect.imported_lead_id)
+            .one_or_none()
+        )
+        if existing is not None:
+            return existing
+
+    contact_ready = next(
+        (
+            contact
+            for contact in db.query(ApolloProspectContact)
+            .filter(ApolloProspectContact.prospect_id == prospect.id)
+            .all()
+            if contact.email and contact.phone
+        ),
+        None,
+    )
+    if contact_ready is None:
+        raise ValueError(
+            "prospect must have both email and phone before automatic import"
+        )
+
+    prospect.review_status = "approved"
+    db.flush()
+    return import_prospect_to_my_leads(
+        db,
+        prospect.id,
+        assigned_to=assigned_to,
+    )

@@ -11,7 +11,47 @@ from app.models.apollo_prospect import (
     ApolloProspect,
     ApolloProspectContact,
 )
+from app.models.apollo_search_run import (
+    ApolloSearchRun,
+    ApolloSearchRunProspect,
+)
 from app.routers import apollo as apollo_router
+from app.services.apollo_persistence import (
+    attach_prospect_to_search_run,
+    create_search_run,
+)
+
+
+def test_search_run_attachment_is_queued_and_duplicate_safe():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Lead.__table__,
+            ApolloProspect.__table__,
+            ApolloProspectContact.__table__,
+            ApolloSearchRun.__table__,
+            ApolloSearchRunProspect.__table__,
+        ],
+    )
+    db = sessionmaker(bind=engine)()
+    prospect = ApolloProspect(name="Acme", review_status="discovered")
+    db.add(prospect)
+    db.flush()
+
+    run = create_search_run(
+        db,
+        filters={"business_types": ["developers"], "locations": ["Nairobi"]},
+        assigned_to="Jane Sales",
+    )
+    first = attach_prospect_to_search_run(db, run, prospect)
+    second = attach_prospect_to_search_run(db, run, prospect)
+
+    assert first.id == second.id
+    assert first.status == "queued"
+    assert run.found_count == 1
+    assert run.queued_count == 1
+    assert db.query(ApolloSearchRunProspect).count() == 1
 
 
 def test_search_persists_returned_prospect_as_discovered(monkeypatch):
@@ -27,6 +67,8 @@ def test_search_persists_returned_prospect_as_discovered(monkeypatch):
             Lead.__table__,
             ApolloProspect.__table__,
             ApolloProspectContact.__table__,
+            ApolloSearchRun.__table__,
+            ApolloSearchRunProspect.__table__,
         ],
     )
 
@@ -108,3 +150,21 @@ def test_search_persists_returned_prospect_as_discovered(monkeypatch):
     assert saved.name == "Nairobi Property Managers"
     assert saved.review_status == "discovered"
     assert saved.quality_score > 0
+
+    run = db.query(ApolloSearchRun).one()
+    queue_item = db.query(ApolloSearchRunProspect).one()
+    assert queue_item.search_run_id == run.id
+    assert queue_item.prospect_id == saved.id
+    assert queue_item.status == "queued"
+    assert response.json()["search_run"] == {
+        "id": run.id,
+        "status": "queued",
+        "found_count": 1,
+        "processed_count": 0,
+        "imported_count": 0,
+        "no_contact_count": 0,
+        "failed_count": 0,
+        "queued_count": 1,
+        "credit_status": None,
+        "billing_cycle_reset_at": None,
+    }

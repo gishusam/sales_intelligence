@@ -1,4 +1,7 @@
-from app.services.apollo_persistence import import_prospect_to_my_leads
+from app.services.apollo_persistence import (
+    auto_import_contact_ready_prospect,
+    import_prospect_to_my_leads,
+)
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -155,6 +158,41 @@ def test_repeat_import_reuses_existing_lead():
 
     db.refresh(prospect)
     assert prospect.imported_lead_id == first_lead.id
+
+
+def test_auto_import_bypasses_manual_review_and_is_idempotent():
+    db = make_session()
+    prospect = ApolloProspect(
+        name="Automatic Developer",
+        city="Nairobi",
+        review_status="discovered",
+    )
+    db.add(prospect)
+    db.flush()
+    db.add(
+        ApolloProspectContact(
+            prospect_id=prospect.id,
+            apollo_person_id="person-auto",
+            name="Alice Founder",
+            title="Founder",
+            email="alice@example.com",
+            phone="+254700000000",
+            enrichment_status="enriched",
+        )
+    )
+    db.commit()
+
+    first = auto_import_contact_ready_prospect(
+        db, prospect.id, assigned_to="Jane Sales"
+    )
+    second = auto_import_contact_ready_prospect(
+        db, prospect.id, assigned_to="Jane Sales"
+    )
+
+    assert first.id == second.id
+    assert db.query(Lead).count() == 1
+    assert prospect.review_status == "imported"
+    assert prospect.imported_lead_id == first.id
 
 
 def test_import_recovers_from_stale_imported_lead_id():
