@@ -15,7 +15,11 @@ from app.services.apollo_credits import (
 )
 from app.services.apollo_enrichment import _select_best_contact
 from app.services.apollo_normalizer import normalize_person
-from app.services.apollo_persistence import upsert_prospect_contact
+from app.services.apollo_persistence import (
+    apply_contact_enrichment,
+    auto_import_contact_ready_prospect,
+    upsert_prospect_contact,
+)
 
 
 DEFAULT_CONTACT_TITLES = [
@@ -49,17 +53,25 @@ class ApolloEnrichmentAlreadyRunning(RuntimeError):
 
 @contextmanager
 def _account_enrichment_lock(db: Session):
-    dialect = db.get_bind().dialect.name
+    engine = db.get_bind()
+    dialect = engine.dialect.name
     if dialect == "postgresql":
-        acquired = db.execute(
-            text("SELECT pg_try_advisory_xact_lock(:lock_id)"),
-            {"lock_id": _POSTGRES_ADVISORY_LOCK_ID},
-        ).scalar()
-        if not acquired:
-            raise ApolloEnrichmentAlreadyRunning(
-                "Another Apollo enrichment batch is already running"
-            )
-        yield
+        with engine.connect() as lock_connection:
+            acquired = lock_connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": _POSTGRES_ADVISORY_LOCK_ID},
+            ).scalar()
+            if not acquired:
+                raise ApolloEnrichmentAlreadyRunning(
+                    "Another Apollo enrichment batch is already running"
+                )
+            try:
+                yield
+            finally:
+                lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": _POSTGRES_ADVISORY_LOCK_ID},
+                )
         return
 
     if not _PROCESS_ENRICHMENT_LOCK.acquire(blocking=False):
@@ -134,6 +146,30 @@ def _enrich_search_run_unlocked(
             .filter(ApolloProspect.id == item.prospect_id)
             .one()
         )
+        contact_ready = (
+            db.query(ApolloProspectContact)
+            .filter(
+                ApolloProspectContact.prospect_id == prospect.id,
+                ApolloProspectContact.email.isnot(None),
+                ApolloProspectContact.phone.isnot(None),
+            )
+            .order_by(ApolloProspectContact.id)
+            .first()
+        )
+        if contact_ready is not None:
+            auto_import_contact_ready_prospect(
+                db,
+                prospect.id,
+                assigned_to=run.assigned_to or "Apollo",
+            )
+            item.status = "imported"
+            item.contact_id = contact_ready.id
+            item.processed_at = datetime.now(timezone.utc)
+            run.imported_count = (run.imported_count or 0) + 1
+            run.processed_count = (run.processed_count or 0) + 1
+            run.queued_count = max((run.queued_count or 0) - 1, 0)
+            continue
+
         people = client.search_people(
             organization_ids=[prospect.apollo_organization_id],
             titles=DEFAULT_CONTACT_TITLES,
@@ -154,6 +190,10 @@ def _enrich_search_run_unlocked(
             continue
 
         contact = _select_best_contact(contacts)
+        item.status = "requesting"
+        item.contact_id = contact.id
+        item.attempts = (item.attempts or 0) + 1
+        db.commit()
         try:
             response = client.enrich_contact_details(
                 person_id=contact.apollo_person_id,
@@ -164,10 +204,33 @@ def _enrich_search_run_unlocked(
             )
         except httpx.HTTPError as exc:
             item.status = "failed"
-            item.contact_id = contact.id
-            item.attempts = (item.attempts or 0) + 1
             item.processed_at = datetime.now(timezone.utc)
             item.last_error = str(exc)
+            run.failed_count = (run.failed_count or 0) + 1
+            run.processed_count = (run.processed_count or 0) + 1
+            run.queued_count = max((run.queued_count or 0) - 1, 0)
+            run.status = "failed"
+            break
+        person = response.get("person") or {}
+        apply_contact_enrichment(
+            db,
+            contact.id,
+            first_name=person.get("first_name"),
+            last_name=person.get("last_name"),
+            name=person.get("name"),
+            title=person.get("title"),
+            linkedin_url=person.get("linkedin_url"),
+            email=person.get("email"),
+        )
+        phone_enrichment = response.get("phone_enrichment") or {}
+        if phone_enrichment.get("status") != "pending":
+            item.status = "failed"
+            item.processed_at = datetime.now(timezone.utc)
+            item.last_error = (
+                phone_enrichment.get("message")
+                or "Apollo phone enrichment was not accepted"
+            )
+            contact.contact_enrichment_status = "failed"
             run.failed_count = (run.failed_count or 0) + 1
             run.processed_count = (run.processed_count or 0) + 1
             run.queued_count = max((run.queued_count or 0) - 1, 0)
@@ -178,13 +241,38 @@ def _enrich_search_run_unlocked(
         contact.contact_enrichment_request_id = (
             str(request_id) if request_id is not None else None
         )
+
+        # The asynchronous phone webhook may have completed while
+        # /people/match was still in flight. Refresh persisted state before
+        # deciding that this queue item is still pending.
+        db.refresh(contact)
+        db.refresh(item)
+        db.refresh(run)
+
+        if contact.email and contact.phone:
+            auto_import_contact_ready_prospect(
+                db,
+                prospect.id,
+                assigned_to=run.assigned_to or "Apollo",
+            )
+
+            if item.status != "imported":
+                item.status = "imported"
+                item.processed_at = datetime.now(timezone.utc)
+                run.imported_count = (run.imported_count or 0) + 1
+                run.processed_count = (run.processed_count or 0) + 1
+                run.queued_count = max((run.queued_count or 0) - 1, 0)
+
+            reserved_attempts += 1
+            db.commit()
+            continue
+
         item.status = "pending"
-        item.contact_id = contact.id
-        item.attempts = (item.attempts or 0) + 1
         item.processed_at = datetime.now(timezone.utc)
         run.processed_count = (run.processed_count or 0) + 1
         run.queued_count = max((run.queued_count or 0) - 1, 0)
         reserved_attempts += 1
+        db.commit()
 
     if run.queued_count == 0 and run.status == "enriching":
         pending_count = (

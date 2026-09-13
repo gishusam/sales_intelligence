@@ -282,12 +282,12 @@ def apply_contact_details_webhook(
         if email is None and phone is None:
             contact.contact_enrichment_status = "not_found"
             if has_queue_table:
-                queue_item = (
+                queue_items = (
                     db.query(ApolloSearchRunProspect)
                     .filter(ApolloSearchRunProspect.contact_id == contact.id)
-                    .one_or_none()
+                    .all()
                 )
-                if queue_item is not None:
+                for queue_item in queue_items:
                     run = (
                         db.query(ApolloSearchRun)
                         .filter(ApolloSearchRun.id == queue_item.search_run_id)
@@ -362,14 +362,14 @@ def apply_contact_details_webhook(
             and contact.phone
             and has_queue_table
         ):
-            queue_item = (
+            queue_items = (
                 db.query(ApolloSearchRunProspect)
                 .filter(
                     ApolloSearchRunProspect.contact_id == contact.id,
                 )
-                .one_or_none()
+                .all()
             )
-            if queue_item is not None:
+            for queue_item in queue_items:
                 run = (
                     db.query(ApolloSearchRun)
                     .filter(

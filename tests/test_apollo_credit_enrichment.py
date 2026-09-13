@@ -12,6 +12,7 @@ from app.services.apollo_queue import (
     _PROCESS_ENRICHMENT_LOCK,
     enrich_search_run,
 )
+from app.services.apollo_enrichment import apply_contact_details_webhook
 
 
 def _queued_run(count=2):
@@ -247,3 +248,289 @@ def test_account_wide_lock_rejects_overlapping_enrichment():
         _PROCESS_ENRICHMENT_LOCK.release()
 
     assert client.credit_calls == 0
+
+
+def test_sync_email_then_phone_only_webhook_auto_imports_exactly_once():
+    db, run = _queued_run(count=1)
+
+    class FakeClient:
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {"limit": 100, "consumed": 91, "left_over": 9}
+                }
+            }
+
+        def search_people(self, **kwargs):
+            return {
+                "people": [
+                    {
+                        "id": "person-real-flow",
+                        "name": "Rita Founder",
+                        "title": "Founder",
+                        "seniority": "founder",
+                        "organization_id": "org-0",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            return {
+                "request_id": "phone-request-real-flow",
+                "person": {
+                    "id": "person-real-flow",
+                    "first_name": "Rita",
+                    "last_name": "Founder",
+                    "name": "Rita Founder",
+                    "title": "Founder",
+                    "email": "rita@example.com",
+                },
+                "phone_enrichment": {"status": "pending"},
+            }
+
+    enrich_search_run(
+        db,
+        FakeClient(),
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+    contact = db.query(ApolloProspectContact).one()
+
+    assert contact.email == "rita@example.com"
+    assert contact.phone is None
+    assert db.query(Lead).count() == 0
+    db.commit()
+
+    payload = {
+        "people": [
+            {
+                "id": "person-real-flow",
+                "phone_numbers": [{"sanitized_number": "+254700111222"}],
+            }
+        ]
+    }
+    apply_contact_details_webhook(db, payload)
+    db.commit()
+    apply_contact_details_webhook(db, payload)
+    db.commit()
+
+    db.refresh(contact)
+    assert contact.email == "rita@example.com"
+    assert contact.phone == "+254700111222"
+    assert db.query(Lead).count() == 1
+    assert run.imported_count == 1
+
+
+def test_http_200_without_pending_phone_acceptance_marks_item_failed():
+    db, run = _queued_run(count=1)
+
+    class FakeClient:
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {"limit": 100, "consumed": 91, "left_over": 9}
+                }
+            }
+
+        def search_people(self, **kwargs):
+            return {
+                "people": [
+                    {
+                        "id": "person-rejected-phone",
+                        "name": "Rita Founder",
+                        "title": "Founder",
+                        "seniority": "founder",
+                        "organization_id": "org-0",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            return {
+                "person": {
+                    "id": "person-rejected-phone",
+                    "email": "rita@example.com",
+                },
+                "phone_enrichment": {
+                    "status": "not_found",
+                    "message": "No phone accepted",
+                },
+            }
+
+    result = enrich_search_run(
+        db,
+        FakeClient(),
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+    item = db.query(ApolloSearchRunProspect).one()
+    contact = db.query(ApolloProspectContact).one()
+
+    assert item.status == "failed"
+    assert item.last_error == "No phone accepted"
+    assert contact.contact_enrichment_status != "pending"
+    assert run.failed_count == 1
+    assert result.status == "failed"
+
+
+def test_queue_association_is_committed_before_phone_request(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'apollo-race.db'}")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Lead.__table__,
+            ApolloProspect.__table__,
+            ApolloProspectContact.__table__,
+            ApolloSearchRun.__table__,
+            ApolloSearchRunProspect.__table__,
+        ],
+    )
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    run = ApolloSearchRun(
+        filters={},
+        assigned_to="Jane Sales",
+        status="queued",
+        found_count=1,
+        queued_count=1,
+    )
+    prospect = ApolloProspect(
+        apollo_organization_id="org-race",
+        name="Race Developer",
+        review_status="discovered",
+    )
+    db.add_all([run, prospect])
+    db.flush()
+    db.add(
+        ApolloSearchRunProspect(
+            search_run_id=run.id,
+            prospect_id=prospect.id,
+            status="queued",
+        )
+    )
+    db.commit()
+
+    class FakeClient:
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {"limit": 100, "consumed": 91, "left_over": 9}
+                }
+            }
+
+        def search_people(self, **kwargs):
+            return {
+                "people": [
+                    {
+                        "id": "person-race",
+                        "name": "Rita Founder",
+                        "title": "Founder",
+                        "seniority": "founder",
+                        "organization_id": "org-race",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            observer = Session()
+            try:
+                saved_contact = observer.query(ApolloProspectContact).one()
+                saved_item = observer.query(ApolloSearchRunProspect).one()
+                assert saved_item.contact_id == saved_contact.id
+                assert saved_item.status == "requesting"
+                apply_contact_details_webhook(
+                    observer,
+                    {
+                        "people": [
+                            {
+                                "id": "person-race",
+                                "phone_numbers": [
+                                    {"sanitized_number": "+254744444444"}
+                                ],
+                            }
+                        ]
+                    },
+                )
+                observer.commit()
+            finally:
+                observer.close()
+            return {
+                "request_id": "request-race",
+                "person": {
+                    "id": "person-race",
+                    "email": "rita@example.com",
+                },
+                "phone_enrichment": {"status": "pending"},
+            }
+
+    enrich_search_run(
+        db,
+        FakeClient(),
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+
+    observer = Session()
+    try:
+        saved_contact = observer.query(ApolloProspectContact).one()
+        saved_item = observer.query(ApolloSearchRunProspect).one()
+        assert saved_contact.email == "rita@example.com"
+        assert saved_contact.phone == "+254744444444"
+        assert saved_item.status == "imported"
+        assert observer.query(Lead).count() == 1
+    finally:
+        observer.close()
+
+
+def test_existing_contact_ready_prospect_imports_without_paid_enrichment():
+    db, run = _queued_run(count=1)
+    prospect = db.query(ApolloProspect).one()
+    db.add(
+        ApolloProspectContact(
+            prospect_id=prospect.id,
+            apollo_person_id="person-ready",
+            name="Ready Founder",
+            title="Founder",
+            email="ready@example.com",
+            phone="+254733333333",
+            enrichment_status="enriched",
+            contact_enrichment_status="complete",
+        )
+    )
+    db.commit()
+
+    class FakeClient:
+        people_calls = 0
+        paid_calls = 0
+
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {"limit": 100, "consumed": 91, "left_over": 9}
+                }
+            }
+
+        def search_people(self, **kwargs):
+            self.people_calls += 1
+            return {"people": []}
+
+        def enrich_contact_details(self, **kwargs):
+            self.paid_calls += 1
+
+    client = FakeClient()
+    result = enrich_search_run(
+        db,
+        client,
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+    item = db.query(ApolloSearchRunProspect).one()
+
+    assert client.people_calls == 0
+    assert client.paid_calls == 0
+    assert db.query(Lead).count() == 1
+    assert item.status == "imported"
+    assert run.imported_count == 1
+    assert run.processed_count == 1
+    assert run.queued_count == 0
+    assert result.status == "complete"

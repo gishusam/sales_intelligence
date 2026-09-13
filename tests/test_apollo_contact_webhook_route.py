@@ -291,3 +291,68 @@ def test_empty_contact_webhook_marks_pending_item_no_contact(monkeypatch):
     assert item.status == "no_contact"
     assert run.no_contact_count == 1
     assert run.status == "complete"
+
+
+def test_webhook_updates_same_contact_across_multiple_search_runs(monkeypatch):
+    app, db = make_app_and_db()
+    monkeypatch.setattr(settings, "APOLLO_WEBHOOK_SECRET", "secret", raising=False)
+    prospect = ApolloProspect(name="Shared Developer", review_status="discovered")
+    runs = [
+        ApolloSearchRun(
+            filters={"search": index},
+            assigned_to="Jane Sales",
+            status="awaiting_webhooks",
+            found_count=1,
+            processed_count=1,
+            queued_count=0,
+        )
+        for index in (1, 2)
+    ]
+    db.add_all([prospect, *runs])
+    db.flush()
+    contact = ApolloProspectContact(
+        prospect_id=prospect.id,
+        apollo_person_id="person-shared",
+        name="Sheila Founder",
+        title="Founder",
+        email="sheila@example.com",
+        enrichment_status="enriched",
+        contact_enrichment_status="pending",
+    )
+    db.add(contact)
+    db.flush()
+    items = [
+        ApolloSearchRunProspect(
+            search_run_id=run.id,
+            prospect_id=prospect.id,
+            contact_id=contact.id,
+            status="pending",
+            attempts=1,
+        )
+        for run in runs
+    ]
+    db.add_all(items)
+    db.commit()
+
+    payload = {
+        "people": [
+            {
+                "id": "person-shared",
+                "phone_numbers": [{"sanitized_number": "+254722222222"}],
+            }
+        ]
+    }
+    client = TestClient(app)
+    first = client.post(
+        "/api/apollo/webhooks/contact-enrichment?token=secret", json=payload
+    )
+    second = client.post(
+        "/api/apollo/webhooks/contact-enrichment?token=secret", json=payload
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert db.query(Lead).count() == 1
+    assert [item.status for item in items] == ["imported", "imported"]
+    assert [run.imported_count for run in runs] == [1, 1]
+    assert [run.status for run in runs] == ["complete", "complete"]
