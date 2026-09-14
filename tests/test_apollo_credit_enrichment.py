@@ -534,3 +534,74 @@ def test_existing_contact_ready_prospect_imports_without_paid_enrichment():
     assert run.processed_count == 1
     assert run.queued_count == 0
     assert result.status == "complete"
+
+
+def test_targeted_people_search_falls_back_to_broad_company_search():
+    db, run = _queued_run(count=1)
+
+    class FakeClient:
+        search_calls = []
+        enriched_person_id = None
+
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 100,
+                        "consumed": 91,
+                        "left_over": 9,
+                    }
+                }
+            }
+
+        def search_people(self, **kwargs):
+            self.search_calls.append(kwargs)
+
+            if kwargs["titles"] or kwargs["seniorities"]:
+                return {"people": []}
+
+            return {
+                "people": [
+                    {
+                        "id": "person-sales-manager",
+                        "name": "Shamila Manager",
+                        "title": "Sales Manager",
+                        "seniority": None,
+                        "organization_id": "org-0",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            self.enriched_person_id = kwargs["person_id"]
+            return {
+                "request_id": "request-fallback",
+                "person": {
+                    "id": kwargs["person_id"],
+                    "name": "Shamila Manager",
+                    "title": "Sales Manager",
+                    "email": "shamila@example.com",
+                },
+                "phone_enrichment": {"status": "pending"},
+            }
+
+    client = FakeClient()
+
+    result = enrich_search_run(
+        db,
+        client,
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+
+    item = db.query(ApolloSearchRunProspect).one()
+    contact = db.query(ApolloProspectContact).one()
+
+    assert len(client.search_calls) == 2
+    assert client.search_calls[0]["titles"]
+    assert client.search_calls[1]["titles"] == []
+    assert client.search_calls[1]["seniorities"] == []
+    assert client.enriched_person_id == "person-sales-manager"
+    assert contact.title == "Sales Manager"
+    assert item.status == "pending"
+    assert result.status == "awaiting_webhooks"

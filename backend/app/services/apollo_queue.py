@@ -177,6 +177,16 @@ def _enrich_search_run_unlocked(
             page=1,
             per_page=25,
         ).get("people", [])
+
+        if not people:
+            people = client.search_people(
+                organization_ids=[prospect.apollo_organization_id],
+                titles=[],
+                seniorities=[],
+                page=1,
+                per_page=25,
+            ).get("people", [])
+
         contacts = [
             upsert_prospect_contact(db, prospect, normalize_person(person))
             for person in people
