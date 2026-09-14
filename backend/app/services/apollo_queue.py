@@ -113,15 +113,7 @@ def _enrich_search_run_unlocked(
 
     run.credit_status = budget.as_dict()
     run.billing_cycle_reset_at = budget.reset_date
-    if not budget.can_enrich_contact():
-        run.status = "waiting_for_credits"
-        db.flush()
-        return EnrichmentRunResult(
-            run=run,
-            status="waiting_for_credits",
-        )
 
-    reserved_attempts = 0
     queued_items = (
         db.query(ApolloSearchRunProspect)
         .filter(
@@ -131,6 +123,60 @@ def _enrich_search_run_unlocked(
         .order_by(ApolloSearchRunProspect.id)
         .all()
     )
+
+    # Import any prospect that is already contact-ready before applying the
+    # paid-credit gate. This path does not spend Apollo credits.
+    for item in queued_items:
+        prospect = (
+            db.query(ApolloProspect)
+            .filter(ApolloProspect.id == item.prospect_id)
+            .one()
+        )
+        contact_ready = (
+            db.query(ApolloProspectContact)
+            .filter(
+                ApolloProspectContact.prospect_id == prospect.id,
+                ApolloProspectContact.email.isnot(None),
+                ApolloProspectContact.phone.isnot(None),
+            )
+            .order_by(ApolloProspectContact.id)
+            .first()
+        )
+        if contact_ready is None:
+            continue
+
+        auto_import_contact_ready_prospect(
+            db,
+            prospect.id,
+            assigned_to=run.assigned_to or "Apollo",
+        )
+        item.status = "imported"
+        item.contact_id = contact_ready.id
+        item.processed_at = datetime.now(timezone.utc)
+        run.imported_count = (run.imported_count or 0) + 1
+        run.processed_count = (run.processed_count or 0) + 1
+        run.queued_count = max((run.queued_count or 0) - 1, 0)
+
+    if run.queued_count == 0:
+        run.status = "complete"
+        run.enrichment_completed_at = datetime.now(timezone.utc)
+        db.flush()
+        return EnrichmentRunResult(run=run, status="complete")
+
+    if not budget.can_enrich_contact():
+        run.status = "waiting_for_credits"
+        db.flush()
+        return EnrichmentRunResult(
+            run=run,
+            status="waiting_for_credits",
+        )
+
+    reserved_attempts = 0
+    queued_items = [
+        item
+        for item in queued_items
+        if item.status == "queued"
+    ]
     run.status = "enriching"
     run.enrichment_started_at = run.enrichment_started_at or datetime.now(
         timezone.utc

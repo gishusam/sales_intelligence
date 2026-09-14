@@ -605,3 +605,61 @@ def test_targeted_people_search_falls_back_to_broad_company_search():
     assert contact.title == "Sales Manager"
     assert item.status == "pending"
     assert result.status == "awaiting_webhooks"
+
+
+def test_ready_contact_imports_even_when_paid_credit_balance_is_zero():
+    db, run = _queued_run(count=1)
+    prospect = db.query(ApolloProspect).one()
+
+    db.add(
+        ApolloProspectContact(
+            prospect_id=prospect.id,
+            apollo_person_id="person-ready-zero-credit",
+            name="Ready Contact",
+            title="Founder",
+            email="ready-zero@example.com",
+            phone="+254700000001",
+            enrichment_status="enriched",
+            contact_enrichment_status="complete",
+        )
+    )
+    db.commit()
+
+    class FakeClient:
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 500,
+                        "consumed": 125,
+                        "left_over": 375,
+                    },
+                    "direct_dial_credit": {
+                        "limit": 100,
+                        "consumed": 100,
+                        "left_over": 0,
+                    },
+                }
+            }
+
+        def search_people(self, **kwargs):
+            raise AssertionError("People Search must not be called")
+
+        def enrich_contact_details(self, **kwargs):
+            raise AssertionError("Paid enrichment must not be called")
+
+    result = enrich_search_run(
+        db,
+        FakeClient(),
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+
+    item = db.query(ApolloSearchRunProspect).one()
+
+    assert db.query(Lead).count() == 1
+    assert item.status == "imported"
+    assert run.imported_count == 1
+    assert run.processed_count == 1
+    assert run.queued_count == 0
+    assert result.status == "complete"
