@@ -12,7 +12,10 @@ from app.models.apollo_prospect import (
     ApolloProspect,
     ApolloProspectContact,
 )
-from app.models.apollo_search_run import ApolloSearchRun
+from app.models.apollo_search_run import (
+    ApolloSearchRun,
+    ApolloSearchRunProspect,
+)
 from app.services.apollo import ApolloClient
 from app.services.apollo_enrichment import (
     apply_contact_details_webhook,
@@ -335,6 +338,65 @@ def list_search_runs(
         search_runs.append(item)
 
     return {"search_runs": search_runs}
+
+
+@router.get("/search-runs/{run_id}/prospects")
+def list_search_run_prospects(
+    run_id: int,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    run = (
+        db.query(ApolloSearchRun)
+        .filter(ApolloSearchRun.id == run_id)
+        .one_or_none()
+    )
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Apollo search run not found",
+        )
+
+    rows = (
+        db.query(ApolloSearchRunProspect, ApolloProspect)
+        .join(
+            ApolloProspect,
+            ApolloProspect.id
+            == ApolloSearchRunProspect.prospect_id,
+        )
+        .filter(
+            ApolloSearchRunProspect.search_run_id == run_id
+        )
+        .order_by(ApolloSearchRunProspect.id)
+        .all()
+    )
+
+    prospects = []
+    for item, prospect in rows:
+        prospects.append({
+            "id": prospect.id,
+            "apollo_organization_id": (
+                prospect.apollo_organization_id
+            ),
+            "name": prospect.name,
+            "domain": prospect.domain,
+            "website_url": prospect.website_url,
+            "linkedin_url": prospect.linkedin_url,
+            "employee_count": prospect.employee_count,
+            "city": prospect.city,
+            "country": prospect.country,
+            "industry": prospect.industry,
+            "quality_score": prospect.quality_score,
+            "quality_band": prospect.quality_band,
+            "review_status": prospect.review_status,
+            "imported_lead_id": prospect.imported_lead_id,
+            "queue_status": item.status,
+            "attempts": item.attempts or 0,
+            "contact_id": item.contact_id,
+            "last_error": item.last_error,
+        })
+
+    return {"prospects": prospects}
 
 
 @router.get("/search-runs/{run_id}")

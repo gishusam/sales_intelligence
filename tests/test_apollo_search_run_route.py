@@ -152,3 +152,102 @@ def test_search_run_list_returns_newest_runs_with_resume_context():
     assert runs[0]["queued_count"] == 8
     assert runs[0]["assigned_to"] == "Samuel Ngugi"
     assert runs[0]["created_at"].startswith("2026-09-14T07:00:00")
+
+
+def test_search_run_prospects_returns_persisted_company_queue():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Lead.__table__,
+            ApolloProspect.__table__,
+            ApolloProspectContact.__table__,
+            ApolloSearchRun.__table__,
+            ApolloSearchRunProspect.__table__,
+        ],
+    )
+    db = sessionmaker(bind=engine)()
+
+    run = ApolloSearchRun(
+        filters={
+            "business_types": ["real estate developer"],
+            "locations": ["Nairobi, Kenya"],
+        },
+        status="waiting_for_credits",
+        found_count=2,
+        queued_count=2,
+        assigned_to="Samuel Ngugi",
+    )
+
+    risun = ApolloProspect(
+        apollo_organization_id="org-risun",
+        name="Risun Development Company Limited",
+        domain="risundevelopers.co.ke",
+        city="Nairobi",
+        country="Kenya",
+        industry="real estate",
+        quality_score=72,
+        quality_band="good",
+        review_status="discovered",
+    )
+
+    maestro = ApolloProspect(
+        apollo_organization_id="org-maestro",
+        name="Maestro Homes Limited",
+        domain="maestrohomes.com",
+        city="Nairobi",
+        country="Kenya",
+        industry="real estate",
+        quality_score=68,
+        quality_band="good",
+        review_status="discovered",
+    )
+
+    db.add_all([run, risun, maestro])
+    db.flush()
+
+    db.add_all([
+        ApolloSearchRunProspect(
+            search_run_id=run.id,
+            prospect_id=risun.id,
+            status="queued",
+        ),
+        ApolloSearchRunProspect(
+            search_run_id=run.id,
+            prospect_id=maestro.id,
+            status="queued",
+        ),
+    ])
+    db.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=2,
+        name="Samuel Ngugi",
+        email="samuel@example.com",
+        role="sales",
+    )
+
+    response = TestClient(app).get(
+        f"/api/apollo/search-runs/{run.id}/prospects"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert len(body["prospects"]) == 2
+
+    first = body["prospects"][0]
+
+    assert first["id"] == risun.id
+    assert first["name"] == "Risun Development Company Limited"
+    assert first["domain"] == "risundevelopers.co.ke"
+    assert first["queue_status"] == "queued"
+    assert first["attempts"] == 0
