@@ -72,3 +72,80 @@ def test_enrich_search_run_route_returns_resumable_credit_status(monkeypatch):
     assert response.json()["queued_count"] == 1
     assert response.json()["credit_status"]["verified"] is True
     assert response.json()["billing_cycle_reset_at"] == "2026-10-01"
+
+
+def test_enrich_route_uses_configured_unified_credit_mode(monkeypatch):
+    from types import SimpleNamespace
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Lead.__table__,
+            ApolloProspect.__table__,
+            ApolloProspectContact.__table__,
+            ApolloSearchRun.__table__,
+            ApolloSearchRunProspect.__table__,
+        ],
+    )
+    db = sessionmaker(bind=engine)()
+
+    run = ApolloSearchRun(
+        filters={"locations": ["Nairobi"]},
+        assigned_to="Jane Sales",
+        status="queued",
+        found_count=1,
+        queued_count=1,
+    )
+    db.add(run)
+    db.commit()
+
+    captured = {}
+
+    def fake_enrich_search_run(
+        db,
+        client,
+        run_id,
+        *,
+        webhook_url,
+        credit_mode=None,
+    ):
+        captured["credit_mode"] = credit_mode
+        return SimpleNamespace(run=run)
+
+    monkeypatch.setattr(
+        apollo_router,
+        "enrich_search_run",
+        fake_enrich_search_run,
+    )
+    monkeypatch.setattr(
+        apollo_router.settings,
+        "APOLLO_API_KEY",
+        "test-key",
+    )
+    monkeypatch.setattr(
+        apollo_router.settings,
+        "APOLLO_WEBHOOK_SECRET",
+        "secret",
+    )
+
+    app = FastAPI()
+    app.include_router(apollo_router.router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=7,
+        name="Jane Sales",
+        email="jane@example.com",
+        role="sales",
+    )
+
+    response = TestClient(app).post(
+        f"/api/apollo/search-runs/{run.id}/enrich"
+    )
+
+    assert response.status_code == 200
+    assert captured["credit_mode"] == "unified"

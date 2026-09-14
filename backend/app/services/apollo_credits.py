@@ -64,7 +64,11 @@ def _remaining(pool: object, name: str) -> int:
     return int(value)
 
 
-def normalize_credit_budget(payload: dict) -> ApolloCreditBudget:
+def normalize_credit_budget(
+    payload: dict,
+    *,
+    mode: str | None = None,
+) -> ApolloCreditBudget:
     if not isinstance(payload, dict):
         raise CreditBalanceUnavailable(
             "Apollo credit response is invalid"
@@ -87,7 +91,19 @@ def normalize_credit_budget(payload: dict) -> ApolloCreditBudget:
         if isinstance(direct_pool, dict)
         else None
     )
-    unified = direct_pool is None or direct_limit == 0
+    detected_unified = direct_pool is None or direct_limit == 0
+
+    if mode not in (None, "unified", "separate"):
+        raise CreditBalanceUnavailable(
+            "Apollo credit mode must be unified or separate"
+        )
+
+    unified = (
+        mode == "unified"
+        if mode is not None
+        else detected_unified
+    )
+
     direct_left = (
         None
         if unified

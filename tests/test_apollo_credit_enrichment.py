@@ -491,7 +491,7 @@ def test_existing_contact_ready_prospect_imports_without_paid_enrichment():
             apollo_person_id="person-ready",
             name="Ready Founder",
             title="Founder",
-            email="ready@example.com",
+            email=None,
             phone="+254733333333",
             enrichment_status="enriched",
             contact_enrichment_status="complete",
@@ -662,4 +662,303 @@ def test_ready_contact_imports_even_when_paid_credit_balance_is_zero():
     assert run.imported_count == 1
     assert run.processed_count == 1
     assert run.queued_count == 0
+    assert result.status == "complete"
+
+
+def test_waiting_for_credits_avoids_n_plus_one_contact_queries():
+    from sqlalchemy import event
+
+    db, run = _queued_run(count=8)
+
+    class FakeClient:
+        paid_calls = 0
+
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 100,
+                        "consumed": 96,
+                        "left_over": 4,
+                    }
+                },
+                "current_credit_cycle": {
+                    "end_date": "2026-10-01",
+                },
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            self.paid_calls += 1
+
+    select_count = 0
+
+    def count_selects(
+        conn,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        nonlocal select_count
+
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_count += 1
+
+    engine = db.get_bind()
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        count_selects,
+    )
+
+    client = FakeClient()
+
+    try:
+        result = enrich_search_run(
+            db,
+            client,
+            run.id,
+            webhook_url="https://example.test/webhook",
+        )
+    finally:
+        event.remove(
+            engine,
+            "before_cursor_execute",
+            count_selects,
+        )
+
+    assert result.status == "waiting_for_credits"
+    assert client.paid_calls == 0
+
+    # Run + queue + bulk prospect/contact-ready lookups should stay bounded.
+    # Adding more queued companies must not add two SELECTs per company.
+    assert select_count <= 5
+
+
+def test_explicit_unified_credit_mode_allows_enrichment_with_legacy_phone_pool():
+    db, run = _queued_run(count=1)
+
+    class FakeClient:
+        enriched_person_id = None
+
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 375,
+                        "consumed": 0,
+                        "left_over": 375,
+                    },
+                    "direct_dial_credit": {
+                        "limit": 160,
+                        "consumed": 160,
+                        "left_over": 0,
+                    },
+                },
+                "current_credit_cycle": {
+                    "end_date": "2026-10-14T00:00:01.000-07:00",
+                },
+            }
+
+        def search_people(self, **kwargs):
+            return {
+                "people": [
+                    {
+                        "id": "person-founder",
+                        "name": "Fiona Founder",
+                        "title": "Founder",
+                        "seniority": "founder",
+                        "organization_id": "org-0",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            self.enriched_person_id = kwargs["person_id"]
+            return {
+                "request_id": "request-unified",
+                "phone_enrichment": {"status": "pending"},
+                "person": {"id": kwargs["person_id"]},
+            }
+
+    client = FakeClient()
+
+    result = enrich_search_run(
+        db,
+        client,
+        run.id,
+        webhook_url="https://example.test/webhook",
+        credit_mode="unified",
+    )
+
+    assert client.enriched_person_id == "person-founder"
+    assert result.status == "awaiting_webhooks"
+    assert run.credit_status["mode"] == "unified"
+    assert run.credit_status["lead_credits_left"] == 375
+    assert run.credit_status["direct_dial_credits_left"] is None
+
+
+def test_phone_only_webhook_auto_imports_lead_without_email():
+    db, run = _queued_run(count=1)
+
+    class FakeClient:
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 100,
+                        "consumed": 0,
+                        "left_over": 100,
+                    }
+                }
+            }
+
+        def search_people(self, **kwargs):
+            return {
+                "people": [
+                    {
+                        "id": "person-phone-only",
+                        "name": "Sam Sales",
+                        "title": "Sales Manager",
+                        "seniority": "manager",
+                        "organization_id": "org-0",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            return {
+                "request_id": "phone-request-only",
+                "person": {
+                    "id": "person-phone-only",
+                    "first_name": "Sam",
+                    "last_name": "Sales",
+                    "name": "Sam Sales",
+                    "title": "Sales Manager",
+                },
+                "phone_enrichment": {"status": "pending"},
+            }
+
+    enrich_search_run(
+        db,
+        FakeClient(),
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+
+    contact = db.query(ApolloProspectContact).one()
+
+    assert contact.email is None
+    assert contact.phone is None
+    assert db.query(Lead).count() == 0
+
+    apply_contact_details_webhook(
+        db,
+        {
+            "people": [
+                {
+                    "id": "person-phone-only",
+                    "phone_numbers": [
+                        {
+                            "sanitized_number": "+254700123456",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    db.commit()
+
+    db.refresh(contact)
+
+    item = db.query(ApolloSearchRunProspect).one()
+    lead = db.query(Lead).one()
+
+    assert contact.phone == "+254700123456"
+    assert contact.email is None
+
+    assert lead.phone == "+254700123456"
+    assert lead.email is None
+    assert lead.contact_person == "Sam Sales"
+    assert lead.contact_person_role == "Sales Manager"
+
+    assert item.status == "imported"
+    assert run.imported_count == 1
+
+
+def test_fast_phone_only_completion_auto_imports_without_email():
+    db, run = _queued_run(count=1)
+
+    class FakeClient:
+        def get_credit_usage(self):
+            return {
+                "credit_usage_stats": {
+                    "lead_credit": {
+                        "limit": 100,
+                        "consumed": 0,
+                        "left_over": 100,
+                    }
+                }
+            }
+
+        def search_people(self, **kwargs):
+            return {
+                "people": [
+                    {
+                        "id": "person-fast-phone",
+                        "name": "Sam Sales",
+                        "title": "Sales Manager",
+                        "seniority": "manager",
+                        "organization_id": "org-0",
+                    }
+                ]
+            }
+
+        def enrich_contact_details(self, **kwargs):
+            contact = (
+                db.query(ApolloProspectContact)
+                .filter(
+                    ApolloProspectContact.apollo_person_id
+                    == kwargs["person_id"]
+                )
+                .one()
+            )
+
+            contact.phone = "+254700999111"
+            db.commit()
+
+            return {
+                "request_id": "fast-phone-request",
+                "person": {
+                    "id": kwargs["person_id"],
+                    "first_name": "Sam",
+                    "last_name": "Sales",
+                    "name": "Sam Sales",
+                    "title": "Sales Manager",
+                },
+                "phone_enrichment": {
+                    "status": "pending",
+                },
+            }
+
+    result = enrich_search_run(
+        db,
+        FakeClient(),
+        run.id,
+        webhook_url="https://example.test/webhook",
+    )
+
+    contact = db.query(ApolloProspectContact).one()
+    item = db.query(ApolloSearchRunProspect).one()
+    lead = db.query(Lead).one()
+
+    assert contact.phone == "+254700999111"
+    assert contact.email is None
+
+    assert lead.phone == "+254700999111"
+    assert lead.email is None
+
+    assert item.status == "imported"
+    assert run.imported_count == 1
     assert result.status == "complete"

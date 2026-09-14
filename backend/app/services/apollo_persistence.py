@@ -495,7 +495,6 @@ def import_prospect_to_my_leads(
         .filter(
             ApolloProspectContact.prospect_id == prospect.id,
             ApolloProspectContact.enrichment_status == "enriched",
-            ApolloProspectContact.email.isnot(None),
             ApolloProspectContact.phone.isnot(None),
         )
         .order_by(ApolloProspectContact.id)
@@ -554,13 +553,13 @@ def auto_import_contact_ready_prospect(
             for contact in db.query(ApolloProspectContact)
             .filter(ApolloProspectContact.prospect_id == prospect.id)
             .all()
-            if contact.email and contact.phone
+            if contact.phone
         ),
         None,
     )
     if contact_ready is None:
         raise ValueError(
-            "prospect must have both email and phone before automatic import"
+            "prospect must have a phone before automatic import"
         )
 
     prospect.review_status = "approved"

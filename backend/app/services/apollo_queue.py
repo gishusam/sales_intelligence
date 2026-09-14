@@ -96,6 +96,7 @@ def _enrich_search_run_unlocked(
     run_id: int,
     *,
     webhook_url: str,
+    credit_mode: str | None = None,
 ) -> EnrichmentRunResult:
     run = (
         db.query(ApolloSearchRun)
@@ -104,7 +105,10 @@ def _enrich_search_run_unlocked(
     )
 
     try:
-        budget = normalize_credit_budget(client.get_credit_usage())
+        budget = normalize_credit_budget(
+            client.get_credit_usage(),
+            mode=credit_mode,
+        )
     except (httpx.HTTPError, CreditBalanceUnavailable, TypeError, ValueError):
         run.status = "credit_unavailable"
         run.credit_status = {"verified": False}
@@ -126,22 +130,47 @@ def _enrich_search_run_unlocked(
 
     # Import any prospect that is already contact-ready before applying the
     # paid-credit gate. This path does not spend Apollo credits.
-    for item in queued_items:
-        prospect = (
+    prospect_ids = [
+        item.prospect_id
+        for item in queued_items
+    ]
+
+    prospects_by_id = {
+        prospect.id: prospect
+        for prospect in (
             db.query(ApolloProspect)
-            .filter(ApolloProspect.id == item.prospect_id)
-            .one()
+            .filter(ApolloProspect.id.in_(prospect_ids))
+            .all()
         )
-        contact_ready = (
+    }
+
+    contact_ready_by_prospect_id = {}
+    if prospect_ids:
+        ready_contacts = (
             db.query(ApolloProspectContact)
             .filter(
-                ApolloProspectContact.prospect_id == prospect.id,
-                ApolloProspectContact.email.isnot(None),
+                ApolloProspectContact.prospect_id.in_(prospect_ids),
                 ApolloProspectContact.phone.isnot(None),
             )
-            .order_by(ApolloProspectContact.id)
-            .first()
+            .order_by(
+                ApolloProspectContact.prospect_id,
+                ApolloProspectContact.id,
+            )
+            .all()
         )
+
+        for contact in ready_contacts:
+            contact_ready_by_prospect_id.setdefault(
+                contact.prospect_id,
+                contact,
+            )
+
+    for item in queued_items:
+        prospect = prospects_by_id[item.prospect_id]
+        contact_ready = contact_ready_by_prospect_id.get(
+            prospect.id
+        )
+
         if contact_ready is None:
             continue
 
@@ -305,7 +334,7 @@ def _enrich_search_run_unlocked(
         db.refresh(item)
         db.refresh(run)
 
-        if contact.email and contact.phone:
+        if contact.phone:
             auto_import_contact_ready_prospect(
                 db,
                 prospect.id,
@@ -355,6 +384,7 @@ def enrich_search_run(
     run_id: int,
     *,
     webhook_url: str,
+    credit_mode: str | None = None,
 ) -> EnrichmentRunResult:
     with _account_enrichment_lock(db):
         return _enrich_search_run_unlocked(
@@ -362,4 +392,5 @@ def enrich_search_run(
             client,
             run_id,
             webhook_url=webhook_url,
+            credit_mode=credit_mode,
         )

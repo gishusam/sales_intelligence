@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # Apollo
     APOLLO_API_KEY: str = ""
     APOLLO_WEBHOOK_SECRET: str = ""
+    APOLLO_CREDIT_MODE: str = "unified"
 
     ALLOWED_ORIGINS: str = (
         "http://localhost:5173,"

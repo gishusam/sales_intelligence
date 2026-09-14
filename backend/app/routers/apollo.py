@@ -443,6 +443,7 @@ def enrich_contacts_for_search_run(
             ApolloClient(api_key=settings.APOLLO_API_KEY),
             run_id,
             webhook_url=webhook_url,
+            credit_mode=settings.APOLLO_CREDIT_MODE,
         )
     except NoResultFound as exc:
         raise HTTPException(

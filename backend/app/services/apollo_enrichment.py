@@ -320,9 +320,9 @@ def apply_contact_details_webhook(
             phone=phone,
         )
 
-        if contact.email and contact.phone:
+        if contact.phone:
             contact.contact_enrichment_status = "complete"
-        elif contact.email or contact.phone:
+        elif contact.email:
             contact.contact_enrichment_status = "partial"
         else:
             contact.contact_enrichment_status = "not_found"
@@ -358,7 +358,6 @@ def apply_contact_details_webhook(
 
         if (
             prospect is not None
-            and contact.email
             and contact.phone
             and has_queue_table
         ):

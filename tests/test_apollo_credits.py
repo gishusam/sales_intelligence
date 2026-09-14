@@ -57,3 +57,32 @@ def test_unified_pool_reserves_worst_case_nine_credits_per_attempt():
 def test_unverifiable_credit_response_is_rejected(payload):
     with pytest.raises(CreditBalanceUnavailable):
         normalize_credit_budget(payload)
+
+
+def test_explicit_unified_mode_ignores_legacy_direct_dial_pool():
+    budget = normalize_credit_budget(
+        {
+            "credit_usage_stats": {
+                "lead_credit": {
+                    "limit": 375,
+                    "consumed": 0,
+                    "left_over": 375,
+                },
+                "direct_dial_credit": {
+                    "limit": 160,
+                    "consumed": 160,
+                    "left_over": 0,
+                },
+            },
+            "current_credit_cycle": {
+                "start_date": "2026-09-14T00:00:01.000-07:00",
+                "end_date": "2026-10-14T00:00:01.000-07:00",
+            },
+        },
+        mode="unified",
+    )
+
+    assert budget.mode == "unified"
+    assert budget.lead_credits_left == 375
+    assert budget.direct_dial_credits_left is None
+    assert budget.can_enrich_contact() is True
