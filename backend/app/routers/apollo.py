@@ -308,6 +308,35 @@ def _serialize_search_run(run: ApolloSearchRun) -> dict:
     }
 
 
+@router.get("/search-runs")
+def list_search_runs(
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(get_current_user),
+):
+    runs = (
+        db.query(ApolloSearchRun)
+        .order_by(
+            ApolloSearchRun.created_at.desc(),
+            ApolloSearchRun.id.desc(),
+        )
+        .all()
+    )
+
+    search_runs = []
+    for run in runs:
+        item = _serialize_search_run(run)
+        item["filters"] = run.filters
+        item["assigned_to"] = run.assigned_to
+        item["created_at"] = (
+            run.created_at.isoformat()
+            if run.created_at is not None
+            else None
+        )
+        search_runs.append(item)
+
+    return {"search_runs": search_runs}
+
+
 @router.get("/search-runs/{run_id}")
 def get_search_run(
     run_id: int,
